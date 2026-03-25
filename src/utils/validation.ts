@@ -145,6 +145,9 @@ export const NODE_TYPES = {
 		"ResourcePreloader",
 		"MultiplayerSpawner",
 		"MultiplayerSynchronizer",
+		"GridMap",
+		"MultiMeshInstance3D",
+		"OccluderInstance3D",
 	],
 } as const;
 

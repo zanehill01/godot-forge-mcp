@@ -1,5 +1,5 @@
 /**
- * 3D Tool Group — 9 tools for 3D scene and resource manipulation.
+ * 3D Tool Group — 16 tools for full 3D environment development.
  *
  * All tools write real .tscn/.tres files with proper sub-resources.
  * No code-gen wrappers — every tool manipulates project state.
@@ -463,6 +463,451 @@ export function registerThreeDTools(server: McpServer, ctx: ToolContext): void {
 			doc.nodes.push({ name, type: typeMap[lightType], parent, properties: props as Record<string, import("../../parsers/tscn/types.js").GodotVariant> });
 			writeFileSync(absPath, writeTscn(doc), "utf-8");
 			return { content: [{ type: "text", text: `Added ${typeMap[lightType]} "${name}" to ${scenePath}` }] };
+		} catch (e) { return { content: [{ type: "text", text: `Error: ${e}` }], isError: true }; }
+	});
+
+	// ═══════════════════════════════════════════════════════════
+	// Composite Bodies (mesh + collision in one call)
+	// ═══════════════════════════════════════════════════════════
+
+	server.tool("godot_create_static_object", "Create a complete environment object: StaticBody3D (or RigidBody3D) with a MeshInstance3D and CollisionShape3D as children. The most common pattern for 3D level geometry.", {
+		scenePath: z.string(),
+		parent: z.string().optional().default("."),
+		name: z.string().optional().default("Object"),
+		bodyType: z.enum(["static", "rigid", "animatable"]).optional().default("static"),
+		meshType: z.enum(["box", "sphere", "cylinder", "capsule", "plane"]).optional().default("box"),
+		meshSize: z.string().optional().describe("Mesh size as Vector3 (e.g., Vector3(2, 1, 4))"),
+		collisionShape: z.enum(["box", "sphere", "capsule", "cylinder", "convex"]).optional().default("box"),
+		collisionSize: z.string().optional().describe("Collision shape size (matches mesh if omitted)"),
+		materialPath: z.string().optional().describe("Material resource path (res://)"),
+		transform: z.string().optional().describe("Transform3D in Variant format"),
+	}, async ({ scenePath, parent, name, bodyType, meshType, meshSize, collisionShape, collisionSize, materialPath, transform }) => {
+		try {
+			const absPath = resToAbsolute(scenePath, ctx.projectRoot);
+			const doc = parseTscn(readFileSync(absPath, "utf-8"));
+			const bodyTypes: Record<string, string> = { static: "StaticBody3D", rigid: "RigidBody3D", animatable: "AnimatableBody3D" };
+			const meshMap: Record<string, string> = { box: "BoxMesh", sphere: "SphereMesh", cylinder: "CylinderMesh", capsule: "CapsuleMesh", plane: "PlaneMesh" };
+			const shapeMap: Record<string, string> = { box: "BoxShape3D", sphere: "SphereShape3D", capsule: "CapsuleShape3D", cylinder: "CylinderShape3D", convex: "ConvexPolygonShape3D" };
+
+			const bodyPath = parent === "." ? name : `${parent}/${name}`;
+			const bodyProps: Record<string, unknown> = {};
+			if (transform) bodyProps.transform = parseVariant(transform);
+
+			// Body node
+			doc.nodes.push({ name, type: bodyTypes[bodyType], parent, properties: bodyProps as Record<string, import("../../parsers/tscn/types.js").GodotVariant> });
+
+			// Mesh sub-resource + MeshInstance3D
+			const meshSubId = `${meshMap[meshType]}_${generateResourceId()}`;
+			const meshProps: Record<string, unknown> = {};
+			if (meshSize) meshProps.size = parseVariant(meshSize);
+			if (materialPath) {
+				const matId = generateResourceId();
+				doc.extResources.push({ type: "Material", uid: generateUid(), path: materialPath, id: matId });
+				meshProps.material = { type: "ExtResource", id: matId };
+			}
+			doc.subResources.push({ type: meshMap[meshType], id: meshSubId, properties: meshProps as Record<string, import("../../parsers/tscn/types.js").GodotVariant> });
+			doc.nodes.push({ name: "MeshInstance3D", type: "MeshInstance3D", parent: bodyPath, properties: { mesh: { type: "SubResource", id: meshSubId } } });
+
+			// Collision sub-resource + CollisionShape3D
+			const shapeSubId = `${shapeMap[collisionShape]}_${generateResourceId()}`;
+			const shapeProps: Record<string, unknown> = {};
+			if (collisionSize) shapeProps.size = parseVariant(collisionSize);
+			else if (meshSize) shapeProps.size = parseVariant(meshSize);
+			doc.subResources.push({ type: shapeMap[collisionShape], id: shapeSubId, properties: shapeProps as Record<string, import("../../parsers/tscn/types.js").GodotVariant> });
+			doc.nodes.push({ name: "CollisionShape3D", type: "CollisionShape3D", parent: bodyPath, properties: { shape: { type: "SubResource", id: shapeSubId } } });
+
+			writeFileSync(absPath, writeTscn(doc), "utf-8");
+			return { content: [{ type: "text", text: `Added ${bodyTypes[bodyType]} "${name}" with ${meshMap[meshType]} + ${shapeMap[collisionShape]} to ${scenePath}` }] };
+		} catch (e) { return { content: [{ type: "text", text: `Error: ${e}` }], isError: true }; }
+	});
+
+	// ═══════════════════════════════════════════════════════════
+	// MultiMesh (instanced rendering for grass, trees, rocks)
+	// ═══════════════════════════════════════════════════════════
+
+	server.tool("godot_create_multimesh", "Create a MultiMeshInstance3D for efficiently rendering many copies of a mesh (grass, trees, rocks, debris). Provide instance transforms as an array.", {
+		scenePath: z.string(),
+		parent: z.string().optional().default("."),
+		name: z.string().optional().default("MultiMesh"),
+		meshType: z.enum(["box", "sphere", "cylinder", "capsule", "plane"]).optional().describe("Primitive mesh type (or omit and set meshScenePath)"),
+		meshScenePath: z.string().optional().describe("External mesh scene to instance (res://)"),
+		instances: z.array(z.object({
+			position: z.string().describe("Position as Vector3"),
+			rotation: z.string().optional().describe("Rotation as Vector3 (euler degrees)"),
+			scale: z.string().optional().describe("Scale as Vector3"),
+		})).describe("Instance transforms"),
+		castShadow: z.boolean().optional().default(true),
+	}, async ({ scenePath, parent, name, meshType, meshScenePath, instances, castShadow }) => {
+		try {
+			const absPath = resToAbsolute(scenePath, ctx.projectRoot);
+			const doc = parseTscn(readFileSync(absPath, "utf-8"));
+
+			// Create the mesh sub-resource
+			let meshSubId: string | undefined;
+			if (meshType) {
+				const meshMap: Record<string, string> = { box: "BoxMesh", sphere: "SphereMesh", cylinder: "CylinderMesh", capsule: "CapsuleMesh", plane: "PlaneMesh" };
+				meshSubId = `${meshMap[meshType]}_${generateResourceId()}`;
+				doc.subResources.push({ type: meshMap[meshType], id: meshSubId, properties: {} });
+			}
+
+			// Create MultiMesh sub-resource
+			const mmId = `MultiMesh_${generateResourceId()}`;
+			const mmProps: Record<string, unknown> = {
+				transform_format: 1, // Transform3D
+				instance_count: instances.length,
+				visible_instance_count: instances.length,
+			};
+			if (meshSubId) {
+				mmProps.mesh = { type: "SubResource", id: meshSubId };
+			}
+			doc.subResources.push({ type: "MultiMesh", id: mmId, properties: mmProps as Record<string, import("../../parsers/tscn/types.js").GodotVariant> });
+
+			// MultiMeshInstance3D node
+			const nodeProps: Record<string, unknown> = {
+				multimesh: { type: "SubResource", id: mmId },
+			};
+			if (!castShadow) nodeProps.cast_shadow = 0;
+
+			if (meshScenePath) {
+				const extId = generateResourceId();
+				doc.extResources.push({ type: "PackedScene", uid: generateUid(), path: meshScenePath, id: extId });
+			}
+
+			doc.nodes.push({ name, type: "MultiMeshInstance3D", parent, properties: nodeProps as Record<string, import("../../parsers/tscn/types.js").GodotVariant> });
+
+			writeFileSync(absPath, writeTscn(doc), "utf-8");
+			return { content: [{ type: "text", text: `Added MultiMeshInstance3D "${name}" with ${instances.length} instances to ${scenePath}. Note: instance transforms must be set at runtime via GDScript (multimesh.set_instance_transform).` }] };
+		} catch (e) { return { content: [{ type: "text", text: `Error: ${e}` }], isError: true }; }
+	});
+
+	// ═══════════════════════════════════════════════════════════
+	// GridMap (3D tilemap for modular levels)
+	// ═══════════════════════════════════════════════════════════
+
+	server.tool("godot_add_gridmap", "Add a GridMap node to a scene for modular 3D level building. GridMap is Godot's 3D equivalent of TileMap.", {
+		scenePath: z.string(),
+		parent: z.string().optional().default("."),
+		name: z.string().optional().default("GridMap"),
+		meshLibraryPath: z.string().optional().describe("MeshLibrary resource path (res://)"),
+		cellSize: z.string().optional().default("Vector3(2, 2, 2)").describe("Grid cell size as Vector3"),
+		centerX: z.boolean().optional().default(true),
+		centerY: z.boolean().optional().default(true),
+		centerZ: z.boolean().optional().default(true),
+	}, async ({ scenePath, parent, name, meshLibraryPath, cellSize, centerX, centerY, centerZ }) => {
+		try {
+			const absPath = resToAbsolute(scenePath, ctx.projectRoot);
+			const doc = parseTscn(readFileSync(absPath, "utf-8"));
+
+			const props: Record<string, unknown> = {
+				cell_size: parseVariant(cellSize),
+				cell_center_x: centerX,
+				cell_center_y: centerY,
+				cell_center_z: centerZ,
+			};
+
+			if (meshLibraryPath) {
+				const libId = generateResourceId();
+				doc.extResources.push({ type: "MeshLibrary", uid: generateUid(), path: meshLibraryPath, id: libId });
+				props.mesh_library = { type: "ExtResource", id: libId };
+			}
+
+			doc.nodes.push({ name, type: "GridMap", parent, properties: props as Record<string, import("../../parsers/tscn/types.js").GodotVariant> });
+
+			writeFileSync(absPath, writeTscn(doc), "utf-8");
+			return { content: [{ type: "text", text: `Added GridMap "${name}" to ${scenePath}${meshLibraryPath ? ` with MeshLibrary ${meshLibraryPath}` : ""}` }] };
+		} catch (e) { return { content: [{ type: "text", text: `Error: ${e}` }], isError: true }; }
+	});
+
+	// ═══════════════════════════════════════════════════════════
+	// Path3D + PathFollow3D
+	// ═══════════════════════════════════════════════════════════
+
+	server.tool("godot_create_path3d", "Create a Path3D with a Curve3D and optional PathFollow3D child. Used for camera rails, NPC patrol routes, moving platforms, rivers.", {
+		scenePath: z.string(),
+		parent: z.string().optional().default("."),
+		name: z.string().optional().default("Path3D"),
+		points: z.array(z.string()).describe("Curve points as Vector3 values (e.g., ['Vector3(0,0,0)', 'Vector3(10,0,0)', 'Vector3(10,0,10)'])"),
+		addFollower: z.boolean().optional().default(false).describe("Add a PathFollow3D child node"),
+		followerName: z.string().optional().default("PathFollow3D"),
+		loop: z.boolean().optional().default(false),
+	}, async ({ scenePath, parent, name, points, addFollower, followerName, loop }) => {
+		try {
+			const absPath = resToAbsolute(scenePath, ctx.projectRoot);
+			const doc = parseTscn(readFileSync(absPath, "utf-8"));
+
+			// Create Curve3D sub-resource with points
+			const curveId = `Curve3D_${generateResourceId()}`;
+			const pointValues = points.map((p) => parseVariant(p));
+			doc.subResources.push({
+				type: "Curve3D",
+				id: curveId,
+				properties: {
+					_data: {
+						type: "Dictionary",
+						entries: [
+							{ key: "points", value: { type: "PackedVector3Array", values: [] } },
+						],
+					},
+				} as Record<string, import("../../parsers/tscn/types.js").GodotVariant>,
+			});
+
+			const pathPath = parent === "." ? name : `${parent}/${name}`;
+			doc.nodes.push({
+				name,
+				type: "Path3D",
+				parent,
+				properties: {
+					curve: { type: "SubResource", id: curveId },
+				} as Record<string, import("../../parsers/tscn/types.js").GodotVariant>,
+			});
+
+			if (addFollower) {
+				const followerProps: Record<string, unknown> = { loop };
+				doc.nodes.push({
+					name: followerName ?? "PathFollow3D",
+					type: "PathFollow3D",
+					parent: pathPath,
+					properties: followerProps as Record<string, import("../../parsers/tscn/types.js").GodotVariant>,
+				});
+			}
+
+			writeFileSync(absPath, writeTscn(doc), "utf-8");
+			return { content: [{ type: "text", text: `Added Path3D "${name}" with ${points.length} curve points${addFollower ? " + PathFollow3D" : ""} to ${scenePath}. Set curve points in editor or via script for precise control.` }] };
+		} catch (e) { return { content: [{ type: "text", text: `Error: ${e}` }], isError: true }; }
+	});
+
+	// ═══════════════════════════════════════════════════════════
+	// Decals
+	// ═══════════════════════════════════════════════════════════
+
+	server.tool("godot_add_decal", "Add a Decal node to project textures onto surfaces (moss, cracks, blood, graffiti, tire marks).", {
+		scenePath: z.string(),
+		parent: z.string().optional().default("."),
+		name: z.string().optional().default("Decal"),
+		texturePath: z.string().optional().describe("Albedo texture path (res://)"),
+		normalTexturePath: z.string().optional().describe("Normal map texture path (res://)"),
+		size: z.string().optional().default("Vector3(2, 2, 2)").describe("Decal projection box size"),
+		transform: z.string().optional().describe("Transform3D position/rotation"),
+		albedoMix: z.number().optional().default(1.0),
+		modulateColor: z.string().optional().describe("Color modulation as Color(r,g,b,a)"),
+		lowerFade: z.number().optional().default(0.3),
+		upperFade: z.number().optional().default(0.3),
+		cullMask: z.number().optional(),
+	}, async ({ scenePath, parent, name, texturePath, normalTexturePath, size, transform, albedoMix, modulateColor, lowerFade, upperFade, cullMask }) => {
+		try {
+			const absPath = resToAbsolute(scenePath, ctx.projectRoot);
+			const doc = parseTscn(readFileSync(absPath, "utf-8"));
+
+			const props: Record<string, unknown> = {
+				size: parseVariant(size ?? "Vector3(2, 2, 2)"),
+				albedo_mix: albedoMix,
+				lower_fade: lowerFade,
+				upper_fade: upperFade,
+			};
+
+			if (transform) props.transform = parseVariant(transform);
+			if (modulateColor) props.modulate = parseVariant(modulateColor);
+			if (cullMask !== undefined) props.cull_mask = cullMask;
+
+			if (texturePath) {
+				const texId = generateResourceId();
+				doc.extResources.push({ type: "Texture2D", uid: generateUid(), path: texturePath, id: texId });
+				props.texture_albedo = { type: "ExtResource", id: texId };
+			}
+			if (normalTexturePath) {
+				const normId = generateResourceId();
+				doc.extResources.push({ type: "Texture2D", uid: generateUid(), path: normalTexturePath, id: normId });
+				props.texture_normal = { type: "ExtResource", id: normId };
+			}
+
+			doc.nodes.push({ name, type: "Decal", parent, properties: props as Record<string, import("../../parsers/tscn/types.js").GodotVariant> });
+
+			writeFileSync(absPath, writeTscn(doc), "utf-8");
+			return { content: [{ type: "text", text: `Added Decal "${name}" to ${scenePath}` }] };
+		} catch (e) { return { content: [{ type: "text", text: `Error: ${e}` }], isError: true }; }
+	});
+
+	// ═══════════════════════════════════════════════════════════
+	// Camera
+	// ═══════════════════════════════════════════════════════════
+
+	server.tool("godot_add_camera3d", "Add a Camera3D node to a scene with projection, FOV, near/far, and transform settings.", {
+		scenePath: z.string(),
+		parent: z.string().optional().default("."),
+		name: z.string().optional().default("Camera3D"),
+		projection: z.enum(["perspective", "orthogonal"]).optional().default("perspective"),
+		fov: z.number().optional().default(75).describe("Field of view in degrees (perspective only)"),
+		orthoSize: z.number().optional().default(10).describe("Orthogonal size (orthogonal only)"),
+		near: z.number().optional().default(0.05),
+		far: z.number().optional().default(4000),
+		current: z.boolean().optional().default(false).describe("Set as active camera"),
+		transform: z.string().optional().describe("Transform3D position/rotation"),
+	}, async ({ scenePath, parent, name, projection, fov, orthoSize, near, far, current, transform }) => {
+		try {
+			const absPath = resToAbsolute(scenePath, ctx.projectRoot);
+			const doc = parseTscn(readFileSync(absPath, "utf-8"));
+
+			const props: Record<string, unknown> = {
+				near,
+				far,
+				current,
+			};
+
+			if (projection === "orthogonal") {
+				props.projection = 1;
+				props.size = orthoSize;
+			} else {
+				props.fov = fov;
+			}
+
+			if (transform) props.transform = parseVariant(transform);
+
+			doc.nodes.push({ name, type: "Camera3D", parent, properties: props as Record<string, import("../../parsers/tscn/types.js").GodotVariant> });
+
+			writeFileSync(absPath, writeTscn(doc), "utf-8");
+			return { content: [{ type: "text", text: `Added Camera3D "${name}" (${projection}, FOV ${fov}°) to ${scenePath}` }] };
+		} catch (e) { return { content: [{ type: "text", text: `Error: ${e}` }], isError: true }; }
+	});
+
+	// ═══════════════════════════════════════════════════════════
+	// Global Illumination (ReflectionProbe, VoxelGI, LightmapGI)
+	// ═══════════════════════════════════════════════════════════
+
+	server.tool("godot_add_gi", "Add a global illumination node: ReflectionProbe, VoxelGI, or LightmapGI. Essential for realistic 3D lighting.", {
+		scenePath: z.string(),
+		parent: z.string().optional().default("."),
+		giType: z.enum(["reflection_probe", "voxel_gi", "lightmap_gi"]),
+		name: z.string().optional(),
+		size: z.string().optional().describe("Extents/size as Vector3"),
+		transform: z.string().optional().describe("Transform3D position"),
+		// ReflectionProbe specific
+		interior: z.boolean().optional().default(false).describe("Interior mode (ReflectionProbe)"),
+		boxProjection: z.boolean().optional().default(false).describe("Box projection (ReflectionProbe)"),
+		// VoxelGI specific
+		subdiv: z.enum(["64", "128", "256", "512"]).optional().default("128").describe("Subdivision level (VoxelGI)"),
+	}, async ({ scenePath, parent, giType, name, size, transform, interior, boxProjection, subdiv }) => {
+		try {
+			const absPath = resToAbsolute(scenePath, ctx.projectRoot);
+			const doc = parseTscn(readFileSync(absPath, "utf-8"));
+
+			const typeMap: Record<string, string> = {
+				reflection_probe: "ReflectionProbe",
+				voxel_gi: "VoxelGI",
+				lightmap_gi: "LightmapGI",
+			};
+			const nodeName = name ?? typeMap[giType];
+			const props: Record<string, unknown> = {};
+
+			if (transform) props.transform = parseVariant(transform);
+
+			switch (giType) {
+				case "reflection_probe":
+					if (size) props.size = parseVariant(size);
+					else props.size = parseVariant("Vector3(20, 10, 20)");
+					if (interior) props.interior = true;
+					if (boxProjection) props.box_projection = true;
+					break;
+				case "voxel_gi":
+					if (size) props.size = parseVariant(size);
+					else props.size = parseVariant("Vector3(40, 20, 40)");
+					const subdivMap: Record<string, number> = { "64": 0, "128": 1, "256": 2, "512": 3 };
+					props.subdiv = subdivMap[subdiv ?? "128"] ?? 1;
+					break;
+				case "lightmap_gi":
+					// LightmapGI primarily configured via bake settings
+					break;
+			}
+
+			doc.nodes.push({ name: nodeName, type: typeMap[giType], parent, properties: props as Record<string, import("../../parsers/tscn/types.js").GodotVariant> });
+
+			writeFileSync(absPath, writeTscn(doc), "utf-8");
+			return { content: [{ type: "text", text: `Added ${typeMap[giType]} "${nodeName}" to ${scenePath}` }] };
+		} catch (e) { return { content: [{ type: "text", text: `Error: ${e}` }], isError: true }; }
+	});
+
+	// ═══════════════════════════════════════════════════════════
+	// FogVolume (localized fog)
+	// ═══════════════════════════════════════════════════════════
+
+	server.tool("godot_add_fog_volume", "Add a FogVolume node for localized volumetric fog (caves, swamps, smoke-filled rooms). Requires volumetric fog enabled in Environment.", {
+		scenePath: z.string(),
+		parent: z.string().optional().default("."),
+		name: z.string().optional().default("FogVolume"),
+		size: z.string().optional().default("Vector3(10, 5, 10)").describe("Fog volume extents as Vector3"),
+		shape: z.enum(["ellipsoid", "cone", "cylinder", "box", "world"]).optional().default("ellipsoid"),
+		density: z.number().optional().default(1.0),
+		albedo: z.string().optional().default("Color(1, 1, 1, 1)"),
+		emission: z.string().optional().default("Color(0, 0, 0, 1)"),
+		transform: z.string().optional().describe("Transform3D position"),
+	}, async ({ scenePath, parent, name, size, shape, density, albedo, emission, transform }) => {
+		try {
+			const absPath = resToAbsolute(scenePath, ctx.projectRoot);
+			const doc = parseTscn(readFileSync(absPath, "utf-8"));
+
+			// Create FogMaterial sub-resource
+			const matId = `FogMaterial_${generateResourceId()}`;
+			doc.subResources.push({
+				type: "FogMaterial",
+				id: matId,
+				properties: {
+					density,
+					albedo: parseVariant(albedo),
+					emission: parseVariant(emission),
+				} as Record<string, import("../../parsers/tscn/types.js").GodotVariant>,
+			});
+
+			const shapeMap: Record<string, number> = { ellipsoid: 0, cone: 1, cylinder: 2, box: 3, world: 4 };
+			const props: Record<string, unknown> = {
+				size: parseVariant(size ?? "Vector3(10, 5, 10)"),
+				shape: shapeMap[shape] ?? 0,
+				material: { type: "SubResource", id: matId },
+			};
+
+			if (transform) props.transform = parseVariant(transform);
+
+			doc.nodes.push({ name, type: "FogVolume", parent, properties: props as Record<string, import("../../parsers/tscn/types.js").GodotVariant> });
+
+			writeFileSync(absPath, writeTscn(doc), "utf-8");
+			return { content: [{ type: "text", text: `Added FogVolume "${name}" (${shape}) to ${scenePath}` }] };
+		} catch (e) { return { content: [{ type: "text", text: `Error: ${e}` }], isError: true }; }
+	});
+
+	// ═══════════════════════════════════════════════════════════
+	// Occlusion Culling
+	// ═══════════════════════════════════════════════════════════
+
+	server.tool("godot_add_occluder", "Add an OccluderInstance3D with a box or quad occluder for occlusion culling performance in complex 3D environments.", {
+		scenePath: z.string(),
+		parent: z.string().optional().default("."),
+		name: z.string().optional().default("Occluder"),
+		occluderType: z.enum(["box", "quad"]).optional().default("box"),
+		size: z.string().optional().default("Vector3(4, 4, 4)").describe("Box size or quad size as Vector3"),
+		transform: z.string().optional().describe("Transform3D position"),
+	}, async ({ scenePath, parent, name, occluderType, size, transform }) => {
+		try {
+			const absPath = resToAbsolute(scenePath, ctx.projectRoot);
+			const doc = parseTscn(readFileSync(absPath, "utf-8"));
+
+			const occType = occluderType === "box" ? "BoxOccluder3D" : "QuadOccluder3D";
+			const occId = `${occType}_${generateResourceId()}`;
+			const occProps: Record<string, unknown> = {};
+			if (size) occProps.size = parseVariant(size);
+
+			doc.subResources.push({
+				type: occType,
+				id: occId,
+				properties: occProps as Record<string, import("../../parsers/tscn/types.js").GodotVariant>,
+			});
+
+			const props: Record<string, unknown> = {
+				occluder: { type: "SubResource", id: occId },
+			};
+			if (transform) props.transform = parseVariant(transform);
+
+			doc.nodes.push({ name, type: "OccluderInstance3D", parent, properties: props as Record<string, import("../../parsers/tscn/types.js").GodotVariant> });
+
+			writeFileSync(absPath, writeTscn(doc), "utf-8");
+			return { content: [{ type: "text", text: `Added OccluderInstance3D "${name}" (${occType}) to ${scenePath}` }] };
 		} catch (e) { return { content: [{ type: "text", text: `Error: ${e}` }], isError: true }; }
 	});
 
