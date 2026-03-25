@@ -43,12 +43,12 @@ ${columns && rows ? `# Create tiles for ${columns}x${rows} grid\nfor y in ${rows
 		return { content: [{ type: "text", text: lines.join("\n") }] };
 	});
 
-	server.tool("godot_paint_tilemap", "Generate GDScript to programmatically place tiles.", {
-		layerIndex: z.number().optional().default(0),
+	server.tool("godot_paint_tilemap", "Generate GDScript to programmatically place tiles on a TileMapLayer (Godot 4.3+). Uses TileMapLayer.set_cell() instead of deprecated TileMap.set_cell().", {
+		nodePath: z.string().optional().default("$TileMapLayer").describe("Path to the TileMapLayer node"),
 		tiles: z.array(z.object({ x: z.number(), y: z.number(), sourceId: z.number().optional().default(0), atlasX: z.number(), atlasY: z.number() })),
-	}, async ({ layerIndex, tiles }) => {
-		const lines = [`# Paint tiles on layer ${layerIndex}`];
-		for (const t of tiles) lines.push(`tilemap.set_cell(${layerIndex}, Vector2i(${t.x}, ${t.y}), ${t.sourceId}, Vector2i(${t.atlasX}, ${t.atlasY}))`);
+	}, async ({ nodePath, tiles }) => {
+		const lines = [`# Paint tiles on TileMapLayer (Godot 4.3+ API)`, `# NOTE: In Godot 4.3+, use individual TileMapLayer nodes instead of TileMap layers`];
+		for (const t of tiles) lines.push(`${nodePath}.set_cell(Vector2i(${t.x}, ${t.y}), ${t.sourceId}, Vector2i(${t.atlasX}, ${t.atlasY}))`);
 		return { content: [{ type: "text", text: lines.join("\n") }] };
 	});
 

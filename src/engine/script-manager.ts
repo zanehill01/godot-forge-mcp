@@ -17,15 +17,20 @@ export interface ScriptAnalysis {
 	className: string | null;
 	extends: string | null;
 	isTool: boolean;
+	isAbstract: boolean;
 	iconPath: string | null;
 	signals: SignalInfo[];
 	exports: ExportInfo[];
+	exportGroups: ExportGroupInfo[];
 	methods: MethodInfo[];
 	enums: EnumInfo[];
 	constants: ConstantInfo[];
 	onreadyVars: OnreadyVarInfo[];
 	regularVars: VarInfo[];
+	staticVars: VarInfo[];
 	innerClasses: InnerClassInfo[];
+	annotations: AnnotationInfo[];
+	rpcMethods: RpcInfo[];
 }
 
 export interface SignalInfo {
@@ -92,6 +97,26 @@ export interface InnerClassInfo {
 	endLine: number;
 }
 
+export interface ExportGroupInfo {
+	type: "group" | "subgroup" | "category";
+	name: string;
+	prefix: string;
+	line: number;
+}
+
+export interface AnnotationInfo {
+	name: string;
+	args: string;
+	line: number;
+}
+
+export interface RpcInfo {
+	methodName: string;
+	mode: string;
+	args: string;
+	line: number;
+}
+
 // ── Script Templates ───────────────────────────────────────────
 
 export interface ScriptSpec {
@@ -139,17 +164,23 @@ export class ScriptManager {
 			className: null,
 			extends: null,
 			isTool: false,
+			isAbstract: false,
 			iconPath: null,
 			signals: [],
 			exports: [],
+			exportGroups: [],
 			methods: [],
 			enums: [],
 			constants: [],
 			onreadyVars: [],
 			regularVars: [],
+			staticVars: [],
 			innerClasses: [],
+			annotations: [],
+			rpcMethods: [],
 		};
 
+		let pendingRpc: { args: string; line: number } | null = null;
 		let i = 0;
 		while (i < lines.length) {
 			const line = lines[i];
@@ -158,6 +189,15 @@ export class ScriptManager {
 			// @tool
 			if (trimmed === "@tool") {
 				analysis.isTool = true;
+				analysis.annotations.push({ name: "tool", args: "", line: i + 1 });
+				i++;
+				continue;
+			}
+
+			// @abstract (4.5 preview)
+			if (trimmed === "@abstract") {
+				analysis.isAbstract = true;
+				analysis.annotations.push({ name: "abstract", args: "", line: i + 1 });
 				i++;
 				continue;
 			}
@@ -166,6 +206,51 @@ export class ScriptManager {
 			const iconMatch = trimmed.match(/^@icon\("([^"]+)"\)/);
 			if (iconMatch) {
 				analysis.iconPath = iconMatch[1];
+				analysis.annotations.push({ name: "icon", args: iconMatch[1], line: i + 1 });
+				i++;
+				continue;
+			}
+
+			// @warning_ignore
+			const warningMatch = trimmed.match(/^@warning_ignore\(([^)]+)\)/);
+			if (warningMatch) {
+				analysis.annotations.push({ name: "warning_ignore", args: warningMatch[1], line: i + 1 });
+				i++;
+				continue;
+			}
+
+			// @static_unload
+			if (trimmed === "@static_unload") {
+				analysis.annotations.push({ name: "static_unload", args: "", line: i + 1 });
+				i++;
+				continue;
+			}
+
+			// @rpc — captures for the next func declaration
+			const rpcMatch = trimmed.match(/^@rpc\(([^)]*)\)/);
+			if (rpcMatch) {
+				pendingRpc = { args: rpcMatch[1], line: i + 1 };
+				analysis.annotations.push({ name: "rpc", args: rpcMatch[1], line: i + 1 });
+				i++;
+				continue;
+			}
+			if (trimmed === "@rpc") {
+				pendingRpc = { args: "", line: i + 1 };
+				analysis.annotations.push({ name: "rpc", args: "", line: i + 1 });
+				i++;
+				continue;
+			}
+
+			// @export_group / @export_subgroup / @export_category
+			const groupMatch = trimmed.match(/^@export_(group|subgroup|category)\("([^"]*)"(?:\s*,\s*"([^"]*)")?\)/);
+			if (groupMatch) {
+				analysis.exportGroups.push({
+					type: groupMatch[1] as "group" | "subgroup" | "category",
+					name: groupMatch[2],
+					prefix: groupMatch[3] ?? "",
+					line: i + 1,
+				});
+				analysis.annotations.push({ name: `export_${groupMatch[1]}`, args: groupMatch[2], line: i + 1 });
 				i++;
 				continue;
 			}
@@ -196,15 +281,18 @@ export class ScriptManager {
 				continue;
 			}
 
-			// @export — annotation may contain parens with spaces like @export_range(0, 100, 1)
+			// @export variants — annotation may contain parens like @export_range(0, 100, 1)
+			// Supports: @export, @export_range, @export_enum, @export_file, @export_dir,
+			// @export_multiline, @export_placeholder, @export_color_no_alpha,
+			// @export_node_path, @export_flags, @export_flags_2d_physics, etc.
 			const exportMatch = trimmed.match(
-				/^(@export\w*(?:\([^)]*\))?)\s+var\s+(\w+)\s*(?::\s*(\S+))?\s*(?:=\s*(.+))?$/,
+				/^(@export\w*(?:\([^)]*\))?)\s+var\s+(\w+)\s*(?::\s*(.+?))?\s*(?:=\s*(.+))?$/,
 			);
 			if (exportMatch) {
 				analysis.exports.push({
 					annotation: exportMatch[1],
 					name: exportMatch[2],
-					type: exportMatch[3] ?? null,
+					type: exportMatch[3]?.trim() ?? null,
 					defaultValue: exportMatch[4]?.trim() ?? null,
 					line: i + 1,
 				});
@@ -214,12 +302,12 @@ export class ScriptManager {
 
 			// @onready
 			const onreadyMatch = trimmed.match(
-				/^@onready\s+var\s+(\w+)\s*(?::\s*(\S+))?\s*=\s*(.+)$/,
+				/^@onready\s+var\s+(\w+)\s*(?::\s*(.+?))?\s*=\s*(.+)$/,
 			);
 			if (onreadyMatch) {
 				analysis.onreadyVars.push({
 					name: onreadyMatch[1],
-					type: onreadyMatch[2] ?? null,
+					type: onreadyMatch[2]?.trim() ?? null,
 					expression: onreadyMatch[3].trim(),
 					line: i + 1,
 				});
@@ -228,11 +316,11 @@ export class ScriptManager {
 			}
 
 			// const
-			const constMatch = trimmed.match(/^const\s+(\w+)\s*(?::\s*(\S+))?\s*=\s*(.+)$/);
+			const constMatch = trimmed.match(/^const\s+(\w+)\s*(?::\s*(.+?))?\s*=\s*(.+)$/);
 			if (constMatch) {
 				analysis.constants.push({
 					name: constMatch[1],
-					type: constMatch[2] ?? null,
+					type: constMatch[2]?.trim() ?? null,
 					value: constMatch[3].trim(),
 					line: i + 1,
 				});
@@ -249,12 +337,26 @@ export class ScriptManager {
 				continue;
 			}
 
+			// static var
+			const staticVarMatch = trimmed.match(/^static\s+var\s+(\w+)\s*(?::\s*(.+?))?\s*(?:=\s*(.+))?$/);
+			if (staticVarMatch) {
+				analysis.staticVars.push({
+					name: staticVarMatch[1],
+					type: staticVarMatch[2]?.trim() ?? null,
+					defaultValue: staticVarMatch[3]?.trim() ?? null,
+					line: i + 1,
+				});
+				i++;
+				continue;
+			}
+
 			// var (regular, not export/onready)
-			const varMatch = trimmed.match(/^var\s+(\w+)\s*(?::\s*(\S+))?\s*(?:=\s*(.+))?$/);
+			// Supports typed arrays: Array[Node2D], typed dicts: Dictionary[String, int]
+			const varMatch = trimmed.match(/^var\s+(\w+)\s*(?::\s*(.+?))?\s*(?:=\s*(.+))?$/);
 			if (varMatch && !trimmed.startsWith("@")) {
 				analysis.regularVars.push({
 					name: varMatch[1],
-					type: varMatch[2] ?? null,
+					type: varMatch[2]?.trim() ?? null,
 					defaultValue: varMatch[3]?.trim() ?? null,
 					line: i + 1,
 				});
@@ -264,13 +366,13 @@ export class ScriptManager {
 
 			// func
 			const funcMatch = trimmed.match(
-				/^(static\s+)?func\s+(\w+)\s*\(([^)]*)\)\s*(?:->\s*(\S+))?\s*:/,
+				/^(static\s+)?func\s+(\w+)\s*\(([^)]*)\)\s*(?:->\s*(.+?))?\s*:/,
 			);
 			if (funcMatch) {
 				const isStatic = !!funcMatch[1];
 				const methodName = funcMatch[2];
 				const params = parseParamList(funcMatch[3]);
-				const returnType = funcMatch[4] ?? null;
+				const returnType = funcMatch[4]?.trim() ?? null;
 				const startLine = i + 1;
 
 				// Find end of method
@@ -304,6 +406,17 @@ export class ScriptManager {
 					body: body.trim(),
 				});
 
+				// Attach pending @rpc
+				if (pendingRpc) {
+					analysis.rpcMethods.push({
+						methodName,
+						mode: pendingRpc.args,
+						args: pendingRpc.args,
+						line: pendingRpc.line,
+					});
+					pendingRpc = null;
+				}
+
 				i = endIdx;
 				continue;
 			}
@@ -335,6 +448,11 @@ export class ScriptManager {
 
 				i = endIdx;
 				continue;
+			}
+
+			// Reset pending rpc if we hit a non-annotation, non-func line
+			if (pendingRpc && !trimmed.startsWith("@") && trimmed !== "") {
+				pendingRpc = null;
 			}
 
 			i++;

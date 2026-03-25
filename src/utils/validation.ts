@@ -44,6 +44,8 @@ export const NODE_TYPES = {
 		"DirectionalLight2D",
 		"CanvasModulate",
 		"BackBufferCopy",
+		"GPUParticles2D",
+		"CPUParticles2D",
 	],
 	visual3d: [
 		"MeshInstance3D",
@@ -67,6 +69,8 @@ export const NODE_TYPES = {
 		"ReflectionProbe",
 		"VoxelGI",
 		"LightmapGI",
+		"LookAtModifier3D",
+		"SpringBoneSimulator3D",
 	],
 	ui: [
 		"Control",
@@ -107,8 +111,15 @@ export const NODE_TYPES = {
 		"HFlowContainer",
 		"VFlowContainer",
 	],
-	audio: ["AudioStreamPlayer", "AudioStreamPlayer2D", "AudioStreamPlayer3D", "AudioListener2D", "AudioListener3D"],
-	animation: ["AnimationPlayer", "AnimationTree", "Tween"],
+	audio: [
+		"AudioStreamPlayer",
+		"AudioStreamPlayer2D",
+		"AudioStreamPlayer3D",
+		"AudioListener2D",
+		"AudioListener3D",
+	],
+	animation: ["AnimationPlayer", "AnimationTree", "AnimationMixer", "Tween"],
+	compositor: ["CompositorEffect"],
 	navigation: [
 		"NavigationRegion2D",
 		"NavigationRegion3D",

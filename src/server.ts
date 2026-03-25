@@ -144,4 +144,12 @@ function registerToolGroups(): void {
 		requiresPlugin: false,
 		register: (s, c) => { import("./tools/groups/refactor.js").then((m) => m.registerRefactorTools(s, c)); },
 	});
+
+	registerGroup({
+		name: "godot_standards",
+		description: "Godot 4.3/4.4 standards: UID management, export pipeline, CI/CD generation, GDExtension support, plugin scaffolding, project linting, test framework integration (GUT/GdUnit4), version control tooling, resource type analysis",
+		toolCount: 14,
+		requiresPlugin: false,
+		register: (s, c) => { import("./tools/groups/godot-standards.js").then((m) => m.registerGodotStandardsTools(s, c)); },
+	});
 }

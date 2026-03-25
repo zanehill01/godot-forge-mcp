@@ -86,6 +86,72 @@ describe("ScriptManager", () => {
 		});
 	});
 
+	describe("analyzeContent — advanced GDScript features", () => {
+		it("detects @abstract annotation", () => {
+			const a = manager.analyzeContent("@abstract\nclass_name BaseEnemy\nextends CharacterBody2D\n");
+			expect(a.isAbstract).toBe(true);
+			expect(a.annotations.some((ann) => ann.name === "abstract")).toBe(true);
+		});
+
+		it("detects @export_group / @export_subgroup / @export_category", () => {
+			const a = manager.analyzeContent(`extends Node
+@export_category("Main")
+@export_group("Stats", "stat_")
+@export var stat_health: int = 100
+@export_subgroup("Offense")
+@export var stat_attack: int = 10
+`);
+			expect(a.exportGroups).toHaveLength(3);
+			expect(a.exportGroups[0].type).toBe("category");
+			expect(a.exportGroups[1].type).toBe("group");
+			expect(a.exportGroups[1].prefix).toBe("stat_");
+			expect(a.exportGroups[2].type).toBe("subgroup");
+		});
+
+		it("detects @rpc annotations", () => {
+			const a = manager.analyzeContent(`extends Node
+@rpc("any_peer", "call_remote")
+func sync_position(pos: Vector2) -> void:
+\tposition = pos
+`);
+			expect(a.rpcMethods).toHaveLength(1);
+			expect(a.rpcMethods[0].methodName).toBe("sync_position");
+		});
+
+		it("detects static variables", () => {
+			const a = manager.analyzeContent(`extends Node
+static var instance_count: int = 0
+static var shared_data: Dictionary
+`);
+			expect(a.staticVars).toHaveLength(2);
+			expect(a.staticVars[0].name).toBe("instance_count");
+			expect(a.staticVars[0].type).toBe("int");
+		});
+
+		it("detects typed arrays and dictionaries in var types", () => {
+			const a = manager.analyzeContent(`extends Node
+var enemies: Array[CharacterBody2D] = []
+var scores: Dictionary[String, int] = {}
+`);
+			expect(a.regularVars).toHaveLength(2);
+			expect(a.regularVars[0].type).toBe("Array[CharacterBody2D]");
+			expect(a.regularVars[1].type).toBe("Dictionary[String, int]");
+		});
+
+		it("detects @warning_ignore", () => {
+			const a = manager.analyzeContent(`extends Node
+@warning_ignore("unused_variable")
+var _temp: int
+`);
+			expect(a.annotations.some((ann) => ann.name === "warning_ignore")).toBe(true);
+		});
+
+		it("detects @static_unload", () => {
+			const a = manager.analyzeContent("@static_unload\nextends Node\n");
+			expect(a.annotations.some((ann) => ann.name === "static_unload")).toBe(true);
+		});
+	});
+
 	describe("generate", () => {
 		it("generates a basic script", () => {
 			const source = manager.generate({
