@@ -52,87 +52,73 @@ export function createServer(config: ForgeConfig): McpServer {
 }
 
 function registerToolGroups(): void {
-	// These are catalog entries — tools are registered when the group is activated.
-	// Each group module will be imported dynamically when activated.
-
 	registerGroup({
 		name: "shader",
-		description:
-			"Shader authoring: create, edit, validate .gdshader files, manage ShaderMaterials, common templates (water, dissolve, outline, toon, hologram, pixelation, wind)",
+		description: "Shader authoring: create, edit, validate .gdshader files, manage ShaderMaterials, templates (water, dissolve, outline, toon, hologram, pixelation, wind, glow)",
 		toolCount: 8,
 		requiresPlugin: false,
-		register: (_server, _ctx) => {
-			// Will be implemented in Phase 4
-		},
+		register: (s, c) => { import("./tools/groups/shader.js").then((m) => m.registerShaderTools(s, c)); },
 	});
 
 	registerGroup({
 		name: "animation",
-		description:
-			"Animation system: create animations, build AnimationTree state machines, blend trees, transitions, tweens, spritesheet animation",
+		description: "Animation system: create animations, AnimationTree state machines, blend trees, transitions, tweens, spritesheet animation",
 		toolCount: 10,
 		requiresPlugin: false,
-		register: (_server, _ctx) => {},
+		register: (s, c) => { import("./tools/groups/animation.js").then((m) => m.registerAnimationTools(s, c)); },
 	});
 
 	registerGroup({
 		name: "physics",
-		description:
-			"Physics setup: collision shapes, physics bodies, areas, raycasts, joints, navigation, physics materials, layer management",
+		description: "Physics: collision shapes, bodies, areas, raycasts, joints, navigation, physics materials, layer management",
 		toolCount: 8,
 		requiresPlugin: false,
-		register: (_server, _ctx) => {},
+		register: (s, c) => { import("./tools/groups/physics.js").then((m) => m.registerPhysicsTools(s, c)); },
 	});
 
 	registerGroup({
 		name: "ui",
-		description:
-			"UI construction: Control layouts, themes, containers, anchors, RichTextLabel BBCode, popups, focus chains for gamepad",
+		description: "UI: Control layouts, themes, containers, anchors, RichTextLabel BBCode, popups, focus chains for gamepad",
 		toolCount: 8,
 		requiresPlugin: false,
-		register: (_server, _ctx) => {},
+		register: (s, c) => { import("./tools/groups/ui.js").then((m) => m.registerUITools(s, c)); },
 	});
 
 	registerGroup({
 		name: "audio",
-		description:
-			"Audio system: AudioStreamPlayers, bus layout, effects (reverb/chorus/delay/EQ), audio pools, spatial 3D audio",
+		description: "Audio: AudioStreamPlayers, bus layout, effects (reverb/chorus/delay/EQ), audio pools, spatial 3D audio",
 		toolCount: 5,
 		requiresPlugin: false,
-		register: (_server, _ctx) => {},
+		register: (s, c) => { import("./tools/groups/audio.js").then((m) => m.registerAudioTools(s, c)); },
 	});
 
 	registerGroup({
 		name: "tilemap",
-		description:
-			"TileMap system: create tilesets, configure tiles, paint tilemaps, autotile rules, tilemap layers, procedural generation",
+		description: "TileMap: create tilesets, configure tiles, paint tilemaps, autotile rules, tilemap layers, procedural generation",
 		toolCount: 6,
 		requiresPlugin: false,
-		register: (_server, _ctx) => {},
+		register: (s, c) => { import("./tools/groups/tilemap.js").then((m) => m.registerTileMapTools(s, c)); },
 	});
 
 	registerGroup({
 		name: "three_d",
-		description:
-			"3D tools: procedural meshes, materials (StandardMaterial3D), environment/sky, camera rigs, lights, LOD, import config",
+		description: "3D: procedural meshes, StandardMaterial3D, environment/sky, camera rigs, lights, LOD, import config",
 		toolCount: 7,
 		requiresPlugin: false,
-		register: (_server, _ctx) => {},
+		register: (s, c) => { import("./tools/groups/three-d.js").then((m) => m.registerThreeDTools(s, c)); },
 	});
 
 	registerGroup({
 		name: "ai_behavior",
-		description:
-			"AI/behavior: finite state machines, behavior trees, dialogue trees, pathfinding, steering behaviors, spawn systems",
+		description: "AI/behavior: finite state machines, behavior trees, dialogue trees, pathfinding, steering behaviors, spawn systems",
 		toolCount: 6,
 		requiresPlugin: false,
-		register: (_server, _ctx) => {},
+		register: (s, c) => { import("./tools/groups/ai-behavior.js").then((m) => m.registerAIBehaviorTools(s, c)); },
 	});
 
 	registerGroup({
 		name: "debug",
-		description:
-			"Live debugging (requires editor plugin): screenshots, runtime node inspection, performance metrics, input injection, debug draw",
+		description: "Live debugging (requires editor plugin): screenshots, runtime node inspection, performance metrics, input injection",
 		toolCount: 7,
 		requiresPlugin: true,
 		register: (_server, _ctx) => {},
@@ -144,15 +130,14 @@ function registerToolGroups(): void {
 			"Project management: input map, autoloads, export presets, project settings, node groups, class reference",
 		toolCount: 6,
 		requiresPlugin: false,
-		register: (_server, _ctx) => {},
+		register: (s, c) => { import("./tools/groups/project-mgmt.js").then((m) => m.registerProjectMgmtTools(s, c)); },
 	});
 
 	registerGroup({
 		name: "refactor",
-		description:
-			"Refactoring: find unused assets/scripts, rename symbols across files, extract/inline scenes, dependency graph",
+		description: "Refactoring: find unused assets/scripts, rename symbols across files, extract/inline scenes, dependency graph",
 		toolCount: 5,
 		requiresPlugin: false,
-		register: (_server, _ctx) => {},
+		register: (s, c) => { import("./tools/groups/refactor.js").then((m) => m.registerRefactorTools(s, c)); },
 	});
 }
