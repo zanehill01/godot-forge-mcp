@@ -107,8 +107,8 @@ function registerToolGroups(): void {
 
 	registerGroup({
 		name: "three_d",
-		description: "3D: procedural meshes (primitive/CSG), StandardMaterial3D resources, environment/sky setup, lights, import config",
-		toolCount: 5,
+		description: "3D: meshes, model instancing (.glb/.gltf), materials, environment (sky/fog/tonemap/SSAO/glow), particles (fire/smoke/rain/snow/sparks), lights, import config",
+		toolCount: 7,
 		requiresPlugin: false,
 		register: (s, c) => { import("./tools/groups/three-d.js").then((m) => m.registerThreeDTools(s, c)); },
 	});
