@@ -15,6 +15,7 @@ import { registerExecutionTools } from "./tools/core/execution.js";
 import { registerGroup, type ToolContext } from "./tools/registry.js";
 import { registerProjectResources } from "./resources/project-resources.js";
 import { registerSceneResources } from "./resources/scene-resources.js";
+import { registerPrompts } from "./prompts/index.js";
 
 export function createServer(config: ForgeConfig): McpServer {
 	const server = new McpServer({
@@ -44,6 +45,9 @@ export function createServer(config: ForgeConfig): McpServer {
 	// Register core resources
 	registerProjectResources(server, toolCtx);
 	registerSceneResources(server, toolCtx);
+
+	// Register guided workflow prompts
+	registerPrompts(server);
 
 	// Register tool groups in the catalog (not activated yet — on-demand via godot_catalog)
 	registerToolGroups();
