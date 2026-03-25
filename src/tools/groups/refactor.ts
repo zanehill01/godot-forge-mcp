@@ -1,5 +1,7 @@
 /**
- * Refactor Tool Group — 5 tools for project cleanup and analysis.
+ * Refactor Tool Group — 3 tools for project cleanup and analysis.
+ *
+ * Removed: godot_extract_scene, godot_inline_scene (were non-functional stubs).
  */
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
@@ -117,18 +119,6 @@ export function registerRefactorTools(server: McpServer, ctx: ToolContext): void
 				}],
 			};
 		} catch (e) { return { content: [{ type: "text", text: `Error: ${e}` }], isError: true }; }
-	});
-
-	server.tool("godot_extract_scene", "Extract a node subtree into its own scene, replacing with an instance.", {
-		scenePath: z.string(), nodePath: z.string(), newScenePath: z.string(),
-	}, async ({ scenePath, nodePath, newScenePath }) => {
-		return { content: [{ type: "text", text: `Would extract "${nodePath}" from ${scenePath} into ${newScenePath} and replace with instance. This operation requires careful node reparenting — use with the editor plugin for undo/redo safety.` }] };
-	});
-
-	server.tool("godot_inline_scene", "Inline an instanced scene's nodes into the parent scene.", {
-		scenePath: z.string(), instanceNodePath: z.string(),
-	}, async ({ scenePath, instanceNodePath }) => {
-		return { content: [{ type: "text", text: `Would inline the instance at "${instanceNodePath}" in ${scenePath}. This replaces the instance reference with the actual node subtree from the instanced scene.` }] };
 	});
 
 	server.tool("godot_dependency_graph", "Map all dependencies between scenes, scripts, and resources.", {}, async () => {

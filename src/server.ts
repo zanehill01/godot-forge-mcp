@@ -2,6 +2,9 @@
  * Godot Forge MCP Server
  *
  * Main server setup — registers core tools, resources, and the progressive discovery system.
+ *
+ * Tool philosophy: Every tool must manipulate state (files, scenes, config) or bridge
+ * to Godot (CLI, editor plugin). No code-generation wrappers — the LLM can write code natively.
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -20,14 +23,12 @@ import { registerPrompts } from "./prompts/index.js";
 export function createServer(config: ForgeConfig): McpServer {
 	const server = new McpServer({
 		name: "godot-forge-mcp",
-		version: "0.1.0",
+		version: "0.2.0",
 	});
 
-	// Initialize engine components
 	const project = new GodotProject(config.projectPath);
 	const assetManager = new AssetManager(config.projectPath);
 
-	// Tool context shared by all tools
 	const toolCtx: ToolContext = {
 		projectRoot: config.projectPath,
 		godotBinary: config.godotBinary,
@@ -36,20 +37,20 @@ export function createServer(config: ForgeConfig): McpServer {
 		getAssetManager: () => assetManager,
 	};
 
-	// Register core tools (always exposed)
+	// Core tools (always exposed) — 21 tools
 	registerDiscoveryTools(server, toolCtx);
 	registerSceneOpsTools(server, toolCtx);
 	registerScriptOpsTools(server, toolCtx);
 	registerExecutionTools(server, toolCtx);
 
-	// Register core resources
+	// Core resources
 	registerProjectResources(server, toolCtx);
 	registerSceneResources(server, toolCtx);
 
-	// Register guided workflow prompts
+	// Guided workflow prompts
 	registerPrompts(server);
 
-	// Register tool groups in the catalog (not activated yet — on-demand via godot_catalog)
+	// On-demand tool groups (activated via godot_catalog)
 	registerToolGroups();
 
 	return server;
@@ -58,7 +59,7 @@ export function createServer(config: ForgeConfig): McpServer {
 function registerToolGroups(): void {
 	registerGroup({
 		name: "shader",
-		description: "Shader authoring: create, edit, validate .gdshader files, manage ShaderMaterials, templates (water, dissolve, outline, toon, hologram, pixelation, wind, glow)",
+		description: "Shader authoring: create/edit/validate .gdshader files, ShaderMaterials, templates",
 		toolCount: 8,
 		requiresPlugin: false,
 		register: (s, c) => { import("./tools/groups/shader.js").then((m) => m.registerShaderTools(s, c)); },
@@ -66,15 +67,15 @@ function registerToolGroups(): void {
 
 	registerGroup({
 		name: "animation",
-		description: "Animation system: create animations, AnimationTree state machines, blend trees, transitions, tweens, spritesheet animation",
-		toolCount: 10,
+		description: "Animation system: create Animation .tres resources, AnimationTree nodes, list/inspect animations across project",
+		toolCount: 4,
 		requiresPlugin: false,
 		register: (s, c) => { import("./tools/groups/animation.js").then((m) => m.registerAnimationTools(s, c)); },
 	});
 
 	registerGroup({
 		name: "physics",
-		description: "Physics: collision shapes, bodies, areas, raycasts, joints, navigation, physics materials, layer management",
+		description: "Physics: collision shapes/bodies/areas, raycasts, joints, navigation, physics materials, layer management",
 		toolCount: 8,
 		requiresPlugin: false,
 		register: (s, c) => { import("./tools/groups/physics.js").then((m) => m.registerPhysicsTools(s, c)); },
@@ -82,47 +83,39 @@ function registerToolGroups(): void {
 
 	registerGroup({
 		name: "ui",
-		description: "UI: Control layouts, themes, containers, anchors, RichTextLabel BBCode, popups, focus chains for gamepad",
-		toolCount: 8,
+		description: "UI: create layouts with Control hierarchies, themes, anchor presets, popup dialogs, focus chains",
+		toolCount: 5,
 		requiresPlugin: false,
 		register: (s, c) => { import("./tools/groups/ui.js").then((m) => m.registerUITools(s, c)); },
 	});
 
 	registerGroup({
 		name: "audio",
-		description: "Audio: AudioStreamPlayers, bus layout, effects (reverb/chorus/delay/EQ), audio pools, spatial 3D audio",
-		toolCount: 5,
+		description: "Audio: add AudioStreamPlayer nodes (2D/3D) to scenes, configure spatial audio properties",
+		toolCount: 2,
 		requiresPlugin: false,
 		register: (s, c) => { import("./tools/groups/audio.js").then((m) => m.registerAudioTools(s, c)); },
 	});
 
 	registerGroup({
 		name: "tilemap",
-		description: "TileMap: create tilesets, configure tiles, paint tilemaps, autotile rules, tilemap layers, procedural generation",
-		toolCount: 6,
+		description: "TileMap: add TileMapLayer nodes (4.3+ API), paint tiles in scenes",
+		toolCount: 2,
 		requiresPlugin: false,
 		register: (s, c) => { import("./tools/groups/tilemap.js").then((m) => m.registerTileMapTools(s, c)); },
 	});
 
 	registerGroup({
 		name: "three_d",
-		description: "3D: procedural meshes, StandardMaterial3D, environment/sky, camera rigs, lights, LOD, import config",
-		toolCount: 7,
+		description: "3D: procedural meshes (primitive/CSG), StandardMaterial3D resources, environment/sky setup, lights, import config",
+		toolCount: 5,
 		requiresPlugin: false,
 		register: (s, c) => { import("./tools/groups/three-d.js").then((m) => m.registerThreeDTools(s, c)); },
 	});
 
 	registerGroup({
-		name: "ai_behavior",
-		description: "AI/behavior: finite state machines, behavior trees, dialogue trees, pathfinding, steering behaviors, spawn systems",
-		toolCount: 6,
-		requiresPlugin: false,
-		register: (s, c) => { import("./tools/groups/ai-behavior.js").then((m) => m.registerAIBehaviorTools(s, c)); },
-	});
-
-	registerGroup({
 		name: "debug",
-		description: "Live debugging (requires editor plugin): screenshots, runtime node inspection, performance metrics, input injection",
+		description: "Live debugging (requires editor plugin): screenshots, scene tree inspection, node properties, input injection, performance metrics",
 		toolCount: 7,
 		requiresPlugin: true,
 		register: (s, c) => { import("./tools/groups/debug.js").then((m) => m.registerDebugTools(s, c)); },
@@ -130,24 +123,23 @@ function registerToolGroups(): void {
 
 	registerGroup({
 		name: "project_mgmt",
-		description:
-			"Project management: input map, autoloads, export presets, project settings, node groups, class reference",
-		toolCount: 6,
+		description: "Project management: input map actions, autoloads, project.godot settings, node groups, class reference",
+		toolCount: 5,
 		requiresPlugin: false,
 		register: (s, c) => { import("./tools/groups/project-mgmt.js").then((m) => m.registerProjectMgmtTools(s, c)); },
 	});
 
 	registerGroup({
 		name: "refactor",
-		description: "Refactoring: find unused assets/scripts, rename symbols across files, extract/inline scenes, dependency graph",
-		toolCount: 5,
+		description: "Refactoring: find unused assets/scripts, rename symbols across files, dependency graph analysis",
+		toolCount: 3,
 		requiresPlugin: false,
 		register: (s, c) => { import("./tools/groups/refactor.js").then((m) => m.registerRefactorTools(s, c)); },
 	});
 
 	registerGroup({
 		name: "godot_standards",
-		description: "Godot 4.3/4.4 standards: UID management, export pipeline, CI/CD generation, GDExtension support, plugin scaffolding, project linting, test framework integration (GUT/GdUnit4), version control tooling, resource type analysis",
+		description: "Godot 4.3/4.4: UID integrity/generation, export pipeline, CI/CD, GDExtension, plugin scaffolding, project linting, test frameworks (GUT/GdUnit4), .gitignore/.gitattributes, resource type analysis",
 		toolCount: 14,
 		requiresPlugin: false,
 		register: (s, c) => { import("./tools/groups/godot-standards.js").then((m) => m.registerGodotStandardsTools(s, c)); },

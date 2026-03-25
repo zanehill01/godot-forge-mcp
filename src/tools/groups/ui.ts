@@ -1,5 +1,8 @@
 /**
- * UI Tool Group — 8 tools for Control node layouts and themes.
+ * UI Tool Group — 5 tools for Control node layouts, themes, and interaction.
+ *
+ * Removed: add_ui_control (redundant with core add_node), create_container_layout
+ * (redundant with create_ui_layout), rich_text_bbcode (code-gen an LLM can do natively).
  */
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -12,7 +15,7 @@ import { parseVariant } from "../../utils/variant.js";
 import type { ToolContext } from "../registry.js";
 
 export function registerUITools(server: McpServer, ctx: ToolContext): void {
-	server.tool("godot_create_ui_layout", "Generate a UI scene with a complete Control node hierarchy from a layout description.", {
+	server.tool("godot_create_ui_layout", "Create a complete UI scene with a Control node hierarchy. Supports nested containers and controls in one call.", {
 		path: z.string().describe("Scene path (res://)"),
 		rootType: z.enum(["Control", "PanelContainer", "MarginContainer", "CenterContainer"]).optional().default("Control"),
 		children: z.array(z.object({
@@ -23,14 +26,20 @@ export function registerUITools(server: McpServer, ctx: ToolContext): void {
 	}, async ({ path, rootType, children }) => {
 		try {
 			const absPath = resToAbsolute(path, ctx.projectRoot);
-			const doc: import("../../parsers/tscn/types.js").TscnDocument = { descriptor: { type: "gd_scene", format: 3 }, extResources: [], subResources: [], nodes: [{ name: "UI", type: rootType as string, properties: { anchors_preset: 15 } }], connections: [] };
+			const doc: import("../../parsers/tscn/types.js").TscnDocument = {
+				descriptor: { type: "gd_scene", format: 3 },
+				extResources: [], subResources: [],
+				nodes: [{ name: "UI", type: rootType as string, properties: { anchors_preset: 15 } }],
+				connections: [],
+			};
 			for (const c of children) {
 				const props: Record<string, unknown> = {};
 				if (c.text) props.text = c.text;
 				if (c.properties) { for (const [k, v] of Object.entries(c.properties)) props[k] = parseVariant(v); }
 				doc.nodes.push({ name: c.name, type: c.type, parent: c.parent ?? ".", properties: props as Record<string, import("../../parsers/tscn/types.js").GodotVariant> });
 			}
-			const { mkdirSync } = await import("node:fs"); const { dirname } = await import("node:path");
+			const { mkdirSync } = await import("node:fs");
+			const { dirname } = await import("node:path");
 			mkdirSync(dirname(absPath), { recursive: true });
 			writeFileSync(absPath, writeTscn(doc), "utf-8");
 			return { content: [{ type: "text", text: `Created UI layout at ${path} with ${children.length} controls` }] };
@@ -46,32 +55,15 @@ export function registerUITools(server: McpServer, ctx: ToolContext): void {
 			if (colors) { for (const [k, v] of Object.entries(colors)) lines.push(`${k} = ${v}`); }
 			lines.push("");
 			const absPath = resToAbsolute(path, ctx.projectRoot);
-			const { mkdirSync } = await import("node:fs"); const { dirname } = await import("node:path");
+			const { mkdirSync } = await import("node:fs");
+			const { dirname } = await import("node:path");
 			mkdirSync(dirname(absPath), { recursive: true });
 			writeFileSync(absPath, lines.join("\n"), "utf-8");
 			return { content: [{ type: "text", text: `Created Theme at ${path}` }] };
 		} catch (e) { return { content: [{ type: "text", text: `Error: ${e}` }], isError: true }; }
 	});
 
-	server.tool("godot_add_ui_control", "Add a UI Control node to a scene.", {
-		scenePath: z.string(), name: z.string(), type: z.string(), parent: z.string().optional().default("."),
-		text: z.string().optional(), anchorPreset: z.number().optional().describe("Anchor preset (15=full rect, 8=center)"),
-		properties: z.record(z.string(), z.string()).optional(),
-	}, async ({ scenePath, name, type, parent, text, anchorPreset, properties }) => {
-		try {
-			const absPath = resToAbsolute(scenePath, ctx.projectRoot);
-			const doc = parseTscn(readFileSync(absPath, "utf-8"));
-			const props: Record<string, unknown> = {};
-			if (text) props.text = text;
-			if (anchorPreset !== undefined) props.anchors_preset = anchorPreset;
-			if (properties) { for (const [k, v] of Object.entries(properties)) props[k] = parseVariant(v); }
-			doc.nodes.push({ name, type, parent, properties: props as Record<string, import("../../parsers/tscn/types.js").GodotVariant> });
-			writeFileSync(absPath, writeTscn(doc), "utf-8");
-			return { content: [{ type: "text", text: `Added ${type} "${name}" to ${scenePath}` }] };
-		} catch (e) { return { content: [{ type: "text", text: `Error: ${e}` }], isError: true }; }
-	});
-
-	server.tool("godot_configure_anchors", "Set anchor/margin presets on a Control node.", {
+	server.tool("godot_configure_anchors", "Set anchor/margin presets on a Control node in a scene.", {
 		scenePath: z.string(), nodePath: z.string(),
 		preset: z.enum(["full_rect", "center", "top_left", "top_right", "bottom_left", "bottom_right", "center_left", "center_right", "center_top", "center_bottom", "top_wide", "bottom_wide", "left_wide", "right_wide"]),
 	}, async ({ scenePath, nodePath, preset }) => {
@@ -87,69 +79,17 @@ export function registerUITools(server: McpServer, ctx: ToolContext): void {
 		} catch (e) { return { content: [{ type: "text", text: `Error: ${e}` }], isError: true }; }
 	});
 
-	server.tool("godot_create_container_layout", "Create a container hierarchy (VBox/HBox/Grid/Margin).", {
-		scenePath: z.string(), parent: z.string().optional().default("."),
-		layout: z.enum(["vbox", "hbox", "grid", "margin", "panel", "center", "split_h", "split_v"]),
-		name: z.string().optional(), children: z.array(z.object({ name: z.string(), type: z.string(), text: z.string().optional() })).optional(),
-	}, async ({ scenePath, parent, layout, name, children }) => {
-		try {
-			const typeMap: Record<string, string> = { vbox: "VBoxContainer", hbox: "HBoxContainer", grid: "GridContainer", margin: "MarginContainer", panel: "PanelContainer", center: "CenterContainer", split_h: "HSplitContainer", split_v: "VSplitContainer" };
-			const absPath = resToAbsolute(scenePath, ctx.projectRoot);
-			const doc = parseTscn(readFileSync(absPath, "utf-8"));
-			const containerName = name ?? layout.charAt(0).toUpperCase() + layout.slice(1);
-			const containerPath = parent === "." ? containerName : `${parent}/${containerName}`;
-			doc.nodes.push({ name: containerName, type: typeMap[layout], parent, properties: {} });
-			if (children) {
-				for (const c of children) {
-					const props: Record<string, unknown> = {};
-					if (c.text) props.text = c.text;
-					doc.nodes.push({ name: c.name, type: c.type, parent: containerPath, properties: props as Record<string, import("../../parsers/tscn/types.js").GodotVariant> });
-				}
-			}
-			writeFileSync(absPath, writeTscn(doc), "utf-8");
-			return { content: [{ type: "text", text: `Added ${typeMap[layout]} "${containerName}" with ${children?.length ?? 0} children` }] };
-		} catch (e) { return { content: [{ type: "text", text: `Error: ${e}` }], isError: true }; }
-	});
-
-	server.tool("godot_rich_text_bbcode", "Generate RichTextLabel BBCode content.", {
-		effects: z.array(z.object({
-			type: z.enum(["bold", "italic", "underline", "strikethrough", "color", "font_size", "shake", "wave", "rainbow", "fade", "code", "url", "image", "center"]),
-			text: z.string(), param: z.string().optional(),
-		})),
-	}, async ({ effects }) => {
-		let bbcode = "";
-		for (const e of effects) {
-			switch (e.type) {
-				case "bold": bbcode += `[b]${e.text}[/b]`; break;
-				case "italic": bbcode += `[i]${e.text}[/i]`; break;
-				case "underline": bbcode += `[u]${e.text}[/u]`; break;
-				case "strikethrough": bbcode += `[s]${e.text}[/s]`; break;
-				case "color": bbcode += `[color=${e.param ?? "white"}]${e.text}[/color]`; break;
-				case "font_size": bbcode += `[font_size=${e.param ?? "16"}]${e.text}[/font_size]`; break;
-				case "shake": bbcode += `[shake rate=${e.param ?? "20"} level=5]${e.text}[/shake]`; break;
-				case "wave": bbcode += `[wave amp=${e.param ?? "50"} freq=5]${e.text}[/wave]`; break;
-				case "rainbow": bbcode += `[rainbow freq=${e.param ?? "1"} sat=0.8 val=0.8]${e.text}[/rainbow]`; break;
-				case "fade": bbcode += `[fade start=${e.param ?? "4"} length=14]${e.text}[/fade]`; break;
-				case "code": bbcode += `[code]${e.text}[/code]`; break;
-				case "url": bbcode += `[url=${e.param ?? ""}]${e.text}[/url]`; break;
-				case "image": bbcode += `[img]${e.text}[/img]`; break;
-				case "center": bbcode += `[center]${e.text}[/center]`; break;
-			}
-		}
-		return { content: [{ type: "text", text: bbcode }] };
-	});
-
-	server.tool("godot_create_popup_dialog", "Create a popup/dialog scene.", {
+	server.tool("godot_create_popup_dialog", "Create a popup/dialog scene file.", {
 		path: z.string(), type: z.enum(["confirm", "alert", "custom"]).optional().default("confirm"),
 		title: z.string().optional().default("Dialog"), message: z.string().optional().default("Are you sure?"),
 	}, async ({ path, type, title, message }) => {
 		try {
-			const lines = [`[gd_scene format=3]`, "", `[node name="${title}" type="AcceptDialog"]`,
-				`title = "${title}"`, `dialog_text = "${message}"`];
-			if (type === "confirm") { lines[2] = `[node name="${title}" type="ConfirmationDialog"]`; }
-			lines.push("");
+			const dialogType = type === "confirm" ? "ConfirmationDialog" : "AcceptDialog";
+			const lines = [`[gd_scene format=3]`, "", `[node name="${title}" type="${dialogType}"]`,
+				`title = "${title}"`, `dialog_text = "${message}"`, ""];
 			const absPath = resToAbsolute(path, ctx.projectRoot);
-			const { mkdirSync } = await import("node:fs"); const { dirname } = await import("node:path");
+			const { mkdirSync } = await import("node:fs");
+			const { dirname } = await import("node:path");
 			mkdirSync(dirname(absPath), { recursive: true });
 			writeFileSync(absPath, lines.join("\n"), "utf-8");
 			return { content: [{ type: "text", text: `Created ${type} dialog at ${path}` }] };

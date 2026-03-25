@@ -1,5 +1,9 @@
 /**
- * Animation Tool Group — 10 tools for the Godot animation system.
+ * Animation Tool Group — 4 tools that actually manipulate animation data.
+ *
+ * Removed: stubs (add_animation_state, add_animation_transition, add_animation_track),
+ * code-gen wrappers (tween_builder, create_blend_tree, animation_from_spritesheet).
+ * An LLM can generate tween code, blend tree configs, and spritesheet setups natively.
  */
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -8,14 +12,13 @@ import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { parseTscn } from "../../parsers/tscn/parser.js";
 import { writeTscn } from "../../parsers/tscn/writer.js";
-import { resToAbsolute } from "../../utils/path.js";
-import { generateResourceId } from "../../utils/path.js";
+import { resToAbsolute, generateResourceId } from "../../utils/path.js";
 import type { ToolContext } from "../registry.js";
 
 export function registerAnimationTools(server: McpServer, ctx: ToolContext): void {
 	server.tool(
 		"godot_create_animation",
-		"Create an Animation resource (.tres) with tracks and keyframes.",
+		"Create an Animation resource (.tres) with tracks and keyframes. Writes real .tres files.",
 		{
 			path: z.string().describe("Output .tres path (res://)"),
 			name: z.string().describe("Animation name"),
@@ -42,7 +45,6 @@ export function registerAnimationTools(server: McpServer, ctx: ToolContext): voi
 				if (loop) lines.push(`loop_mode = 1`);
 
 				if (tracks && tracks.length > 0) {
-					lines.push(`tracks/${tracks.length - 1}/type = "value"`); // Ensure track count
 					for (let i = 0; i < tracks.length; i++) {
 						const t = tracks[i];
 						lines.push(`tracks/${i}/type = "${t.type}"`);
@@ -73,11 +75,11 @@ export function registerAnimationTools(server: McpServer, ctx: ToolContext): voi
 
 	server.tool(
 		"godot_create_animation_tree",
-		"Add an AnimationTree node to a scene with a state machine or blend tree root.",
+		"Add an AnimationTree node to a scene with a state machine or blend tree root. Writes real .tscn data.",
 		{
 			scenePath: z.string().describe("Scene path (res://)"),
 			parent: z.string().optional().default("."),
-			animPlayerPath: z.string().describe("Path to AnimationPlayer node (e.g., AnimationPlayer)"),
+			animPlayerPath: z.string().describe("Path to AnimationPlayer node"),
 			rootType: z.enum(["state_machine", "blend_tree"]).describe("Root node type"),
 		},
 		async ({ scenePath, parent, animPlayerPath, rootType }) => {
@@ -109,74 +111,8 @@ export function registerAnimationTools(server: McpServer, ctx: ToolContext): voi
 	);
 
 	server.tool(
-		"godot_add_animation_state",
-		"Add a state to an AnimationNodeStateMachine in a scene.",
-		{
-			scenePath: z.string(),
-			stateName: z.string().describe("State name (e.g., idle, run, jump)"),
-			animationName: z.string().describe("Animation resource name to play in this state"),
-		},
-		async ({ scenePath: _scenePath, stateName, animationName }) => {
-			try {
-				// State machines store states in the sub-resource properties
-				// This is a simplified version — full implementation would modify the sub-resource
-				return { content: [{ type: "text", text: `Added state "${stateName}" playing "${animationName}" (state machine states require AnimationTree runtime configuration or .tres editing)` }] };
-			} catch (e) {
-				return { content: [{ type: "text", text: `Error: ${e}` }], isError: true };
-			}
-		},
-	);
-
-	server.tool(
-		"godot_add_animation_transition",
-		"Add a transition between states in an AnimationNodeStateMachine.",
-		{
-			scenePath: z.string(),
-			from: z.string().describe("Source state name"),
-			to: z.string().describe("Target state name"),
-			autoAdvance: z.boolean().optional().default(false),
-			advanceCondition: z.string().optional().describe("Condition expression for transition"),
-		},
-		async ({ scenePath: _scenePath, from, to, autoAdvance, advanceCondition }) => {
-			try {
-				return { content: [{ type: "text", text: `Configured transition ${from} → ${to}${autoAdvance ? " (auto)" : ""}${advanceCondition ? ` when ${advanceCondition}` : ""}` }] };
-			} catch (e) {
-				return { content: [{ type: "text", text: `Error: ${e}` }], isError: true };
-			}
-		},
-	);
-
-	server.tool(
-		"godot_create_blend_tree",
-		"Generate a blend tree configuration with common blend node setups.",
-		{
-			type: z.enum(["blend_space_1d", "blend_space_2d", "add2", "blend2"]).describe("Blend node type"),
-			animations: z.array(z.string()).describe("Animation names to blend between"),
-			blendParam: z.string().optional().describe("Parameter name for blending"),
-		},
-		async ({ type, animations, blendParam }) => {
-			try {
-				const param = blendParam ?? "blend_amount";
-				return {
-					content: [{
-						type: "text",
-						text: JSON.stringify({
-							blendType: type,
-							animations,
-							parameter: param,
-							note: `Use AnimationTree.set("parameters/${param}", value) to control blending between ${animations.join(", ")}`,
-						}, null, 2),
-					}],
-				};
-			} catch (e) {
-				return { content: [{ type: "text", text: `Error: ${e}` }], isError: true };
-			}
-		},
-	);
-
-	server.tool(
 		"godot_list_animations",
-		"List all animations in AnimationPlayer nodes across the project.",
+		"List all animations in AnimationPlayer nodes across the project. Reads real .tscn files.",
 		{
 			scenePath: z.string().optional().describe("Specific scene to search (or all scenes)"),
 		},
@@ -193,7 +129,6 @@ export function registerAnimationTools(server: McpServer, ctx: ToolContext): voi
 						const doc = parseTscn(content);
 						for (const node of doc.nodes) {
 							if (node.type === "AnimationPlayer") {
-								// Animations are stored as sub-resources or in libraries
 								results.push({
 									scene: s.resPath,
 									player: node.name,
@@ -213,7 +148,7 @@ export function registerAnimationTools(server: McpServer, ctx: ToolContext): voi
 
 	server.tool(
 		"godot_read_animation_tree",
-		"Inspect an AnimationTree's structure as a graph.",
+		"Inspect an AnimationTree's structure from a .tscn file.",
 		{
 			scenePath: z.string(),
 			nodePath: z.string().optional().default("AnimationTree"),
@@ -227,77 +162,6 @@ export function registerAnimationTools(server: McpServer, ctx: ToolContext): voi
 				);
 				if (!treeNode) return { content: [{ type: "text", text: `AnimationTree not found at ${nodePath}` }], isError: true };
 				return { content: [{ type: "text", text: JSON.stringify({ node: treeNode.name, properties: treeNode.properties }, null, 2) }] };
-			} catch (e) {
-				return { content: [{ type: "text", text: `Error: ${e}` }], isError: true };
-			}
-		},
-	);
-
-	server.tool(
-		"godot_tween_builder",
-		"Generate GDScript Tween chain code from a description.",
-		{
-			target: z.string().describe("Target node expression (e.g., $Sprite, self)"),
-			tweens: z.array(z.object({
-				property: z.string().describe("Property to tween (e.g., position, modulate, scale)"),
-				finalValue: z.string().describe("Final value (Godot syntax)"),
-				duration: z.number().describe("Duration in seconds"),
-				transType: z.string().optional().default("TRANS_LINEAR"),
-				easeType: z.string().optional().default("EASE_IN_OUT"),
-			})),
-			parallel: z.boolean().optional().default(false).describe("Run tweens in parallel vs sequential"),
-			loops: z.number().optional().describe("Number of loops (0 = infinite)"),
-		},
-		async ({ target, tweens, parallel, loops }) => {
-			const lines = ["var tween := create_tween()"];
-			if (loops !== undefined) lines.push(`tween.set_loops(${loops})`);
-			if (parallel) lines.push("tween.set_parallel(true)");
-
-			for (const t of tweens) {
-				lines.push(`tween.tween_property(${target}, "${t.property}", ${t.finalValue}, ${t.duration}).set_trans(Tween.${t.transType}).set_ease(Tween.${t.easeType})`);
-			}
-
-			return { content: [{ type: "text", text: lines.join("\n") }] };
-		},
-	);
-
-	server.tool(
-		"godot_add_animation_track",
-		"Add a track to an existing Animation resource.",
-		{
-			animPath: z.string().describe("Animation .tres path (res://)"),
-			trackType: z.enum(["value", "method", "bezier", "audio"]),
-			nodePath: z.string().describe("Target node path"),
-			keyframes: z.array(z.object({ time: z.number(), value: z.string() })),
-		},
-		async ({ animPath: _animPath, trackType, nodePath, keyframes }) => {
-			try {
-				return { content: [{ type: "text", text: `Added ${trackType} track targeting "${nodePath}" with ${keyframes.length} keyframes` }] };
-			} catch (e) {
-				return { content: [{ type: "text", text: `Error: ${e}` }], isError: true };
-			}
-		},
-	);
-
-	server.tool(
-		"godot_animation_from_spritesheet",
-		"Generate SpriteFrames resource from a spritesheet configuration.",
-		{
-			path: z.string().describe("Output .tres path for SpriteFrames"),
-			texturePath: z.string().describe("Spritesheet texture path (res://)"),
-			frameWidth: z.number().describe("Width of each frame in pixels"),
-			frameHeight: z.number().describe("Height of each frame in pixels"),
-			animations: z.array(z.object({
-				name: z.string(),
-				frames: z.array(z.number()).describe("Frame indices (left-to-right, top-to-bottom)"),
-				fps: z.number().optional().default(8),
-				loop: z.boolean().optional().default(true),
-			})),
-		},
-		async ({ path: _path, texturePath, frameWidth, frameHeight, animations }) => {
-			try {
-				const config = { texturePath, frameWidth, frameHeight, animations };
-				return { content: [{ type: "text", text: `SpriteFrames config generated: ${JSON.stringify(config, null, 2)}\n\nNote: Full .tres generation for SpriteFrames requires AtlasTexture sub-resources per frame.` }] };
 			} catch (e) {
 				return { content: [{ type: "text", text: `Error: ${e}` }], isError: true };
 			}

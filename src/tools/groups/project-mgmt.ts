@@ -52,15 +52,7 @@ export function registerProjectMgmtTools(server: McpServer, ctx: ToolContext): v
 		} catch (e) { return { content: [{ type: "text", text: `Error: ${e}` }], isError: true }; }
 	});
 
-	server.tool("godot_export_presets", "Read export presets configuration.", {}, async () => {
-		try {
-			const presetsPath = join(ctx.projectRoot, "export_presets.cfg");
-			const content = readFileSync(presetsPath, "utf-8");
-			return { content: [{ type: "text", text: content }] };
-		} catch {
-			return { content: [{ type: "text", text: "No export_presets.cfg found. Configure exports in Project > Export." }] };
-		}
-	});
+	// godot_export_presets removed — use godot_standards group for full export pipeline support
 
 	server.tool("godot_project_settings", "Read/write project.godot settings.", {
 		section: z.string().describe("Settings section (e.g., application, display, rendering)"),

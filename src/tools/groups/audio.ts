@@ -1,18 +1,20 @@
 /**
- * Audio Tool Group — 5 tools for audio setup.
+ * Audio Tool Group — 2 tools that manipulate scene data.
+ *
+ * Removed: create_audio_bus, audio_effects, create_audio_pool (all pure code-gen).
  */
+
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { readFileSync, writeFileSync } from "node:fs";
 import { parseTscn } from "../../parsers/tscn/parser.js";
 import { writeTscn } from "../../parsers/tscn/writer.js";
-import { resToAbsolute } from "../../utils/path.js";
-import { generateResourceId } from "../../utils/path.js";
+import { resToAbsolute, generateResourceId } from "../../utils/path.js";
 import { generateUid } from "../../utils/uid.js";
 import type { ToolContext } from "../registry.js";
 
 export function registerAudioTools(server: McpServer, ctx: ToolContext): void {
-	server.tool("godot_add_audio", "Add an AudioStreamPlayer (2D/3D) to a scene.", {
+	server.tool("godot_add_audio", "Add an AudioStreamPlayer (2D/3D) node to a scene with an audio stream resource.", {
 		scenePath: z.string(), parent: z.string().optional().default("."),
 		dimension: z.enum(["none", "2d", "3d"]).optional().default("none"),
 		streamPath: z.string().optional().describe("Audio file path (res://)"),
@@ -36,64 +38,7 @@ export function registerAudioTools(server: McpServer, ctx: ToolContext): void {
 		} catch (e) { return { content: [{ type: "text", text: `Error: ${e}` }], isError: true }; }
 	});
 
-	server.tool("godot_create_audio_bus", "Generate GDScript to configure audio bus layout.", {
-		buses: z.array(z.object({ name: z.string(), volume_db: z.number().optional().default(0), effects: z.array(z.string()).optional() })),
-	}, async ({ buses }) => {
-		const lines = ["# Audio bus configuration — run in _ready() of an autoload"];
-		for (let i = 0; i < buses.length; i++) {
-			const b = buses[i];
-			if (i > 0) lines.push(`AudioServer.add_bus(${i})`);
-			lines.push(`AudioServer.set_bus_name(${i}, "${b.name}")`);
-			lines.push(`AudioServer.set_bus_volume_db(${i}, ${b.volume_db})`);
-			if (b.effects) {
-				for (let j = 0; j < b.effects.length; j++) {
-					lines.push(`AudioServer.add_bus_effect(${i}, AudioEffect${b.effects[j]}.new(), ${j})`);
-				}
-			}
-		}
-		return { content: [{ type: "text", text: lines.join("\n") }] };
-	});
-
-	server.tool("godot_audio_effects", "Generate GDScript for adding audio effects to a bus.", {
-		busIndex: z.number(), effects: z.array(z.object({
-			type: z.enum(["Reverb", "Chorus", "Delay", "EQ", "Compressor", "Limiter", "Distortion", "Phaser", "LowPassFilter", "HighPassFilter", "BandPassFilter", "NotchFilter"]),
-			params: z.record(z.string(), z.string()).optional(),
-		})),
-	}, async ({ busIndex, effects }) => {
-		const lines: string[] = [];
-		for (let i = 0; i < effects.length; i++) {
-			const e = effects[i];
-			lines.push(`var fx_${i} := AudioEffect${e.type}.new()`);
-			if (e.params) { for (const [k, v] of Object.entries(e.params)) lines.push(`fx_${i}.${k} = ${v}`); }
-			lines.push(`AudioServer.add_bus_effect(${busIndex}, fx_${i}, ${i})`);
-		}
-		return { content: [{ type: "text", text: lines.join("\n") }] };
-	});
-
-	server.tool("godot_create_audio_pool", "Generate GDScript for a randomized audio pool with pitch/volume variance.", {
-		sounds: z.array(z.string()).describe("Res paths to audio files"),
-		pitchVariance: z.number().optional().default(0.1),
-		volumeVariance: z.number().optional().default(2.0),
-	}, async ({ sounds, pitchVariance, volumeVariance }) => {
-		const code = `# Audio pool with randomization
-var _audio_pool: Array[AudioStream] = [
-${sounds.map((s) => `\tpreload("${s}"),`).join("\n")}
-]
-var _audio_player: AudioStreamPlayer
-
-func _ready() -> void:
-\t_audio_player = AudioStreamPlayer.new()
-\tadd_child(_audio_player)
-
-func play_random() -> void:
-\t_audio_player.stream = _audio_pool.pick_random()
-\t_audio_player.pitch_scale = randf_range(${1 - pitchVariance}, ${1 + pitchVariance})
-\t_audio_player.volume_db = randf_range(-${volumeVariance}, ${volumeVariance})
-\t_audio_player.play()`;
-		return { content: [{ type: "text", text: code }] };
-	});
-
-	server.tool("godot_spatial_audio", "Configure 3D spatial audio parameters on an AudioStreamPlayer3D.", {
+	server.tool("godot_spatial_audio", "Configure 3D spatial audio parameters on an AudioStreamPlayer3D node in a scene.", {
 		scenePath: z.string(), nodePath: z.string(),
 		maxDistance: z.number().optional(), attenuationModel: z.enum(["inverse_distance", "inverse_square_distance", "logarithmic"]).optional(),
 		unitSize: z.number().optional(), maxDb: z.number().optional(),
