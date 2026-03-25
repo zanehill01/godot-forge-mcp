@@ -1,0 +1,7 @@
+[gd_scene format=3 uid="uid://forge_dock_001"]
+
+[ext_resource type="Script" path="res://addons/godot_forge/dock/forge_dock.gd" id="1"]
+
+[node name="ForgeDock" type="PanelContainer"]
+custom_minimum_size = Vector2(200, 120)
+script = ExtResource("1")
