@@ -37,6 +37,7 @@ export interface ShaderFunctionInfo {
 
 /**
  * Analyze a .gdshader file content.
+ * Returns a structured analysis or an empty analysis for empty/whitespace-only files.
  */
 export function analyzeShader(content: string): ShaderAnalysis {
 	const analysis: ShaderAnalysis = {
@@ -48,13 +49,24 @@ export function analyzeShader(content: string): ShaderAnalysis {
 		includes: [],
 	};
 
+	// Handle empty or whitespace-only files
+	if (!content || content.trim() === "") {
+		return analysis;
+	}
+
 	const lines = content.split("\n");
 
 	for (let i = 0; i < lines.length; i++) {
 		const line = lines[i].trim();
 
-		// Skip comments
-		if (line.startsWith("//")) continue;
+		// Skip comments and empty lines
+		if (line.startsWith("//") || line === "") continue;
+
+		// Skip block comments
+		if (line.startsWith("/*")) {
+			while (i < lines.length && !lines[i].includes("*/")) i++;
+			continue;
+		}
 
 		// shader_type
 		const shaderTypeMatch = line.match(/^shader_type\s+(\w+)\s*;/);
@@ -63,10 +75,17 @@ export function analyzeShader(content: string): ShaderAnalysis {
 			continue;
 		}
 
-		// render_mode
-		const renderModeMatch = line.match(/^render_mode\s+(.+);/);
-		if (renderModeMatch) {
-			analysis.renderModes = renderModeMatch[1].split(",").map((m) => m.trim());
+		// render_mode (may span multiple lines)
+		if (line.startsWith("render_mode")) {
+			let renderLine = line;
+			while (!renderLine.includes(";") && i + 1 < lines.length) {
+				i++;
+				renderLine += " " + lines[i].trim();
+			}
+			const renderModeMatch = renderLine.match(/^render_mode\s+(.+);/);
+			if (renderModeMatch) {
+				analysis.renderModes = renderModeMatch[1].split(",").map((m) => m.trim());
+			}
 			continue;
 		}
 
@@ -99,22 +118,39 @@ export function analyzeShader(content: string): ShaderAnalysis {
 			continue;
 		}
 
-		// function
-		const funcMatch = line.match(
-			/^(\w+)\s+(\w+)\s*\(([^)]*)\)\s*\{/,
-		);
-		if (funcMatch) {
-			const returnType = funcMatch[1];
-			const name = funcMatch[2];
-			const paramStr = funcMatch[3];
-			const params = parseShaderParams(paramStr);
+		// function — handle both single-line and multiline signatures
+		// Single line: void fragment() {
+		// Multiline: void fragment(
+		//     ) {
+		const funcStartMatch = line.match(/^(\w+)\s+(\w+)\s*\(/);
+		if (funcStartMatch) {
+			let fullLine = line;
+			// If the opening paren doesn't have a matching close paren on the same line, accumulate
+			if (!fullLine.includes(")")) {
+				let j = i + 1;
+				while (j < lines.length && !fullLine.includes(")")) {
+					fullLine += " " + lines[j].trim();
+					j++;
+				}
+			}
 
-			analysis.functions.push({
-				returnType,
-				name,
-				params,
-				line: i + 1,
-			});
+			const funcMatch = fullLine.match(/^(\w+)\s+(\w+)\s*\(([^)]*)\)\s*\{?/);
+			if (funcMatch) {
+				const returnType = funcMatch[1];
+				const name = funcMatch[2];
+				// Skip keywords that look like functions
+				if (!["if", "for", "while", "return", "else", "switch", "case"].includes(returnType)) {
+					const paramStr = funcMatch[3];
+					const params = parseShaderParams(paramStr);
+
+					analysis.functions.push({
+						returnType,
+						name,
+						params,
+						line: i + 1,
+					});
+				}
+			}
 			continue;
 		}
 

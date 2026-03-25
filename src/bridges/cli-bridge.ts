@@ -1,10 +1,16 @@
 /**
  * CLI Bridge — Invoke Godot binary headlessly for validation, export, and script execution.
+ *
+ * Improvements over v0.1:
+ * - Unique temp files per runScript() call to prevent race conditions
+ * - Proper stream cleanup on process errors
+ * - Better error reporting with context
  */
 
 import { spawn, type ChildProcess } from "node:child_process";
 import { writeFileSync, unlinkSync, existsSync } from "node:fs";
 import { join } from "node:path";
+import { randomBytes } from "node:crypto";
 
 export interface CliResult {
 	exitCode: number | null;
@@ -38,6 +44,15 @@ export class CliBridge {
 			let stdout = "";
 			let stderr = "";
 			let timedOut = false;
+			let settled = false;
+
+			const settle = (result: CliResult) => {
+				if (!settled) {
+					settled = true;
+					clearTimeout(timer);
+					resolve(result);
+				}
+			};
 
 			const proc = spawn(this.godotBinary, ["--path", this.projectRoot, ...args], {
 				cwd: this.projectRoot,
@@ -55,19 +70,23 @@ export class CliBridge {
 			const timer = setTimeout(() => {
 				timedOut = true;
 				proc.kill("SIGTERM");
+				// Force kill if SIGTERM doesn't work after 3s
+				setTimeout(() => {
+					if (!settled) {
+						proc.kill("SIGKILL");
+					}
+				}, 3000);
 			}, timeout);
 
 			proc.on("close", (code) => {
-				clearTimeout(timer);
-				resolve({ exitCode: code, stdout, stderr, timedOut });
+				settle({ exitCode: code, stdout, stderr, timedOut });
 			});
 
 			proc.on("error", (err) => {
-				clearTimeout(timer);
-				resolve({
+				settle({
 					exitCode: -1,
-					stdout: "",
-					stderr: err.message,
+					stdout,
+					stderr: `${stderr}\nProcess error: ${err.message}`,
 					timedOut: false,
 				});
 			});
@@ -78,7 +97,6 @@ export class CliBridge {
 	 * Run a project (game).
 	 */
 	async runProject(scene?: string, timeout: number = 30000): Promise<CliResult> {
-		// Kill existing if running
 		this.stopProject();
 
 		const args: string[] = [];
@@ -88,6 +106,16 @@ export class CliBridge {
 			let stdout = "";
 			let stderr = "";
 			let timedOut = false;
+			let settled = false;
+
+			const settle = (result: CliResult) => {
+				if (!settled) {
+					settled = true;
+					clearTimeout(timer);
+					this.runningProcess = null;
+					resolve(result);
+				}
+			};
 
 			const proc = spawn(this.godotBinary, ["--path", this.projectRoot, ...args], {
 				cwd: this.projectRoot,
@@ -110,18 +138,14 @@ export class CliBridge {
 			}, timeout);
 
 			proc.on("close", (code) => {
-				clearTimeout(timer);
-				this.runningProcess = null;
-				resolve({ exitCode: code, stdout, stderr, timedOut });
+				settle({ exitCode: code, stdout, stderr, timedOut });
 			});
 
 			proc.on("error", (err) => {
-				clearTimeout(timer);
-				this.runningProcess = null;
-				resolve({
+				settle({
 					exitCode: -1,
-					stdout: "",
-					stderr: err.message,
+					stdout,
+					stderr: `${stderr}\nProcess error: ${err.message}`,
 					timedOut: false,
 				});
 			});
@@ -149,9 +173,12 @@ export class CliBridge {
 
 	/**
 	 * Execute a headless GDScript. The code must extend SceneTree and call quit().
+	 * Uses a unique temp file per invocation to prevent race conditions.
 	 */
 	async runScript(code: string, timeout: number = 15000): Promise<CliResult> {
-		const tmpPath = join(this.projectRoot, ".godot_forge_tmp.gd");
+		// Generate unique temp file name to prevent race conditions
+		const uniqueId = randomBytes(8).toString("hex");
+		const tmpPath = join(this.projectRoot, `.godot_forge_tmp_${uniqueId}.gd`);
 
 		// Ensure the script extends SceneTree and quits
 		let safeCode = code;
@@ -159,7 +186,6 @@ export class CliBridge {
 			safeCode = `extends SceneTree\n\n${code}`;
 		}
 		if (!code.includes("quit()")) {
-			// Add auto-quit after _init if not present
 			safeCode += "\n\nfunc _process(_delta):\n\tquit()\n";
 		}
 
@@ -168,11 +194,7 @@ export class CliBridge {
 			const result = await this.run(["--headless", "-s", tmpPath], timeout);
 			return result;
 		} finally {
-			try {
-				unlinkSync(tmpPath);
-			} catch {
-				// ignore cleanup errors
-			}
+			this.cleanupTempFile(tmpPath);
 		}
 	}
 
@@ -202,5 +224,16 @@ export class CliBridge {
 	): Promise<CliResult> {
 		const flag = debug ? "--export-debug" : "--export-release";
 		return this.run(["--headless", flag, preset, outputPath], timeout);
+	}
+
+	private cleanupTempFile(path: string): void {
+		try {
+			if (existsSync(path)) {
+				unlinkSync(path);
+			}
+		} catch {
+			// Best-effort cleanup — log but don't throw
+			console.error(`[godot-forge] Failed to clean up temp file: ${path}`);
+		}
 	}
 }

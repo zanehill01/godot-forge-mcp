@@ -30,13 +30,21 @@ export function findProjectRoot(startDir: string): string | null {
 
 /**
  * Convert a res:// path to an absolute filesystem path.
+ * Validates the resolved path stays within the project root to prevent path traversal.
  */
 export function resToAbsolute(resPath: string, projectRoot: string): string {
 	if (!resPath.startsWith("res://")) {
 		throw new Error(`Not a res:// path: ${resPath}`);
 	}
 	const relativePart = resPath.slice("res://".length);
-	return join(projectRoot, ...relativePart.split("/"));
+	const resolved = resolve(join(projectRoot, ...relativePart.split("/")));
+	const root = resolve(projectRoot);
+
+	if (!resolved.startsWith(root + sep) && resolved !== root) {
+		throw new Error(`Path traversal detected: ${resPath} resolves outside project root`);
+	}
+
+	return resolved;
 }
 
 /**
@@ -51,11 +59,24 @@ export function absoluteToRes(absPath: string, projectRoot: string): string {
 
 /**
  * Check if a path is within a Godot project.
+ * Uses sep-aware comparison to avoid false positives (e.g., /project-v2 matching /project).
  */
 export function isInProject(absPath: string, projectRoot: string): boolean {
 	const resolved = resolve(absPath);
 	const root = resolve(projectRoot);
-	return resolved.startsWith(root);
+	return resolved === root || resolved.startsWith(root + sep);
+}
+
+/**
+ * Validate and resolve a res:// path, throwing on traversal attempts.
+ * Use this as the single entry point for all user-provided res:// paths.
+ */
+export function safeResolvePath(resPath: string, projectRoot: string): string {
+	const abs = resToAbsolute(resPath, projectRoot);
+	if (!isInProject(abs, projectRoot)) {
+		throw new Error(`Path traversal detected: ${resPath} resolves outside project root`);
+	}
+	return abs;
 }
 
 /**

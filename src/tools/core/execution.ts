@@ -7,8 +7,9 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { spawn, type ChildProcess } from "node:child_process";
-import { writeFileSync, unlinkSync } from "node:fs";
+import { writeFileSync, unlinkSync, existsSync } from "node:fs";
 import { join } from "node:path";
+import { randomBytes } from "node:crypto";
 import type { ToolContext } from "../registry.js";
 
 let runningProcess: ChildProcess | null = null;
@@ -146,8 +147,9 @@ export function registerExecutionTools(server: McpServer, ctx: ToolContext): voi
 				};
 			}
 
-			// Write temp script
-			const tmpPath = join(ctx.projectRoot, ".godot_forge_tmp.gd");
+			// Write temp script with unique name to prevent race conditions
+			const uniqueId = randomBytes(8).toString("hex");
+			const tmpPath = join(ctx.projectRoot, `.godot_forge_tmp_${uniqueId}.gd`);
 			try {
 				writeFileSync(tmpPath, code, "utf-8");
 

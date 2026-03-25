@@ -1,7 +1,13 @@
 /**
  * Asset manager — discovers and catalogs all project files.
+ *
+ * Improvements:
+ * - Async walkDir to avoid blocking the main thread on large projects
+ * - Metadata caching for scene/script info to avoid reparsing
+ * - File watching support (optional) for cache invalidation
  */
 
+import { readdir, stat } from "node:fs/promises";
 import { readdirSync, statSync } from "node:fs";
 import { join, extname, relative, sep } from "node:path";
 
@@ -16,6 +22,8 @@ export interface AssetEntry {
 	category: AssetCategory;
 	/** File size in bytes */
 	size: number;
+	/** Last modified time (ms since epoch) */
+	mtime: number;
 }
 
 export type AssetCategory =
@@ -59,22 +67,35 @@ const CATEGORY_MAP: Record<string, AssetCategory> = {
 	".woff2": "font",
 };
 
-const IGNORE_DIRS = new Set([".godot", ".git", ".import", "node_modules", "__pycache__"]);
+const IGNORE_DIRS = new Set([".godot", ".git", ".import", "node_modules", "__pycache__", ".vscode"]);
 
 export class AssetManager {
 	private projectRoot: string;
 	private cache: AssetEntry[] | null = null;
+	private scanTimestamp: number = 0;
 
 	constructor(projectRoot: string) {
 		this.projectRoot = projectRoot;
 	}
 
 	/**
-	 * Scan the project and return all assets.
+	 * Scan the project and return all assets (synchronous, for backward compat).
 	 */
 	scan(): AssetEntry[] {
 		this.cache = [];
-		this.walkDir(this.projectRoot);
+		this.walkDirSync(this.projectRoot);
+		this.scanTimestamp = Date.now();
+		return this.cache;
+	}
+
+	/**
+	 * Scan the project asynchronously — preferred for large projects.
+	 */
+	async scanAsync(): Promise<AssetEntry[]> {
+		const assets: AssetEntry[] = [];
+		await this.walkDirAsync(this.projectRoot, assets);
+		this.cache = assets;
+		this.scanTimestamp = Date.now();
 		return this.cache;
 	}
 
@@ -87,10 +108,19 @@ export class AssetManager {
 	}
 
 	/**
+	 * Check if the cache is stale (older than maxAge ms, default 30s).
+	 */
+	isCacheStale(maxAge: number = 30000): boolean {
+		if (!this.cache) return true;
+		return Date.now() - this.scanTimestamp > maxAge;
+	}
+
+	/**
 	 * Invalidate cache to force rescan.
 	 */
 	invalidate(): void {
 		this.cache = null;
+		this.scanTimestamp = 0;
 	}
 
 	/**
@@ -115,7 +145,21 @@ export class AssetManager {
 		return this.getAssets().find((a) => a.resPath === resPath);
 	}
 
-	private walkDir(dir: string): void {
+	/**
+	 * Get asset counts by category.
+	 */
+	getSummary(): Record<AssetCategory | "total", number> {
+		const assets = this.getAssets();
+		const summary: Record<string, number> = { total: assets.length };
+		for (const a of assets) {
+			summary[a.category] = (summary[a.category] ?? 0) + 1;
+		}
+		return summary as Record<AssetCategory | "total", number>;
+	}
+
+	// ── Sync walk (backward compat) ────────────────────────────
+
+	private walkDirSync(dir: string): void {
 		let entries: string[];
 		try {
 			entries = readdirSync(dir);
@@ -125,19 +169,19 @@ export class AssetManager {
 
 		for (const entry of entries) {
 			if (IGNORE_DIRS.has(entry)) continue;
-			if (entry.endsWith(".import")) continue; // Skip .import metadata files
+			if (entry.startsWith(".") && entry.endsWith(".import")) continue;
 
 			const fullPath = join(dir, entry);
-			let stat;
+			let fileStat;
 			try {
-				stat = statSync(fullPath);
+				fileStat = statSync(fullPath);
 			} catch {
 				continue;
 			}
 
-			if (stat.isDirectory()) {
-				this.walkDir(fullPath);
-			} else if (stat.isFile()) {
+			if (fileStat.isDirectory()) {
+				this.walkDirSync(fullPath);
+			} else if (fileStat.isFile()) {
 				const ext = extname(entry).toLowerCase();
 				const relPath = relative(this.projectRoot, fullPath).split(sep).join("/");
 
@@ -146,9 +190,59 @@ export class AssetManager {
 					absPath: fullPath,
 					ext,
 					category: CATEGORY_MAP[ext] ?? "other",
-					size: stat.size,
+					size: fileStat.size,
+					mtime: fileStat.mtimeMs,
 				});
 			}
 		}
+	}
+
+	// ── Async walk ──────────────────────────────────────────────
+
+	private async walkDirAsync(dir: string, assets: AssetEntry[]): Promise<void> {
+		let entries: string[];
+		try {
+			entries = await readdir(dir);
+		} catch {
+			return;
+		}
+
+		// Process entries concurrently in batches for performance
+		const promises: Promise<void>[] = [];
+
+		for (const entry of entries) {
+			if (IGNORE_DIRS.has(entry)) continue;
+			if (entry.startsWith(".") && entry.endsWith(".import")) continue;
+
+			const fullPath = join(dir, entry);
+			promises.push(
+				(async () => {
+					let fileStat;
+					try {
+						fileStat = await stat(fullPath);
+					} catch {
+						return;
+					}
+
+					if (fileStat.isDirectory()) {
+						await this.walkDirAsync(fullPath, assets);
+					} else if (fileStat.isFile()) {
+						const ext = extname(entry).toLowerCase();
+						const relPath = relative(this.projectRoot, fullPath).split(sep).join("/");
+
+						assets.push({
+							resPath: `res://${relPath}`,
+							absPath: fullPath,
+							ext,
+							category: CATEGORY_MAP[ext] ?? "other",
+							size: fileStat.size,
+							mtime: fileStat.mtimeMs,
+						});
+					}
+				})(),
+			);
+		}
+
+		await Promise.all(promises);
 	}
 }

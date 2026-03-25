@@ -125,7 +125,7 @@ function registerToolGroups(): void {
 		description: "Live debugging (requires editor plugin): screenshots, runtime node inspection, performance metrics, input injection",
 		toolCount: 7,
 		requiresPlugin: true,
-		register: (_server, _ctx) => {},
+		register: (s, c) => { import("./tools/groups/debug.js").then((m) => m.registerDebugTools(s, c)); },
 	});
 
 	registerGroup({

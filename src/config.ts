@@ -38,9 +38,11 @@ export function resolveConfig(args: string[]): ForgeConfig {
 		getArgValue(args, "--godot") ?? process.env.GODOT_BINARY ?? findGodotBinary();
 
 	// Plugin port: --port flag > GODOT_FORGE_PORT env > default 6100
-	const pluginPort = Number(
-		getArgValue(args, "--port") ?? process.env.GODOT_FORGE_PORT ?? "6100",
-	);
+	const rawPort = getArgValue(args, "--port") ?? process.env.GODOT_FORGE_PORT ?? "6100";
+	const pluginPort = Number(rawPort);
+	if (Number.isNaN(pluginPort) || pluginPort < 1 || pluginPort > 65535) {
+		throw new Error(`Invalid port number: ${rawPort}. Must be between 1 and 65535.`);
+	}
 
 	const autoConnect = !args.includes("--no-connect");
 

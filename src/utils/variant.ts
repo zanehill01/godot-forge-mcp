@@ -347,12 +347,18 @@ export function writeVariant(value: GodotVariant): string {
 
 function extractParens(s: string, prefix: string): string {
 	const start = prefix.length + 1; // skip "Type("
+	if (start > s.length || s[prefix.length] !== "(") {
+		throw new Error(`Malformed variant: expected '(' after '${prefix}' in: ${s.slice(0, 50)}`);
+	}
 	let depth = 1;
 	let i = start;
 	while (i < s.length && depth > 0) {
 		if (s[i] === "(") depth++;
 		else if (s[i] === ")") depth--;
 		i++;
+	}
+	if (depth !== 0) {
+		throw new Error(`Unbalanced parentheses in ${prefix}(...): ${s.slice(0, 80)}`);
 	}
 	return s.slice(start, i - 1);
 }

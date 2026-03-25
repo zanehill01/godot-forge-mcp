@@ -36,7 +36,10 @@ async function main(): Promise<void> {
 
 		console.error("[godot-forge] Server running on stdio");
 	} catch (e) {
-		console.error(`[godot-forge] Fatal: ${e}`);
+		const message = e instanceof Error ? e.message : String(e);
+		const stack = e instanceof Error ? e.stack : undefined;
+		console.error(`[godot-forge] Fatal: ${message}`);
+		if (stack) console.error(stack);
 		process.exit(1);
 	}
 }
