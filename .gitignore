@@ -137,3 +137,12 @@ dist
 # Vite logs files
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
+
+# Godot
+.godot/
+*.import
+.godot_forge_tmp.gd
+
+# IDE
+.idea/
+.vscode/

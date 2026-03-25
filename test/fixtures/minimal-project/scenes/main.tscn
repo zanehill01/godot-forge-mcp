@@ -1,0 +1,32 @@
+[gd_scene format=3 uid="uid://cecaux1sm7mo0"]
+
+[ext_resource type="Script" uid="uid://abc123def456" path="res://scripts/player.gd" id="1_abc"]
+[ext_resource type="Texture2D" uid="uid://tex2d000001" path="res://textures/player.png" id="2_xyz"]
+
+[sub_resource type="CapsuleShape2D" id="CapsuleShape2D_abc"]
+radius = 16.0
+height = 32.0
+
+[sub_resource type="RectangleShape2D" id="RectangleShape2D_def"]
+size = Vector2(64, 16)
+
+[node name="Main" type="Node2D"]
+
+[node name="Player" type="CharacterBody2D" parent="."]
+position = Vector2(100, 200)
+script = ExtResource("1_abc")
+
+[node name="Sprite" type="Sprite2D" parent="Player"]
+texture = ExtResource("2_xyz")
+offset = Vector2(0, -16)
+
+[node name="CollisionShape" type="CollisionShape2D" parent="Player"]
+shape = SubResource("CapsuleShape2D_abc")
+
+[node name="Ground" type="StaticBody2D" parent="."]
+position = Vector2(400, 500)
+
+[node name="GroundShape" type="CollisionShape2D" parent="Ground"]
+shape = SubResource("RectangleShape2D_def")
+
+[connection signal="body_entered" from="Player" to="." method="_on_player_body_entered"]
