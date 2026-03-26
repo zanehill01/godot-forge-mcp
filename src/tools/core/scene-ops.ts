@@ -1,8 +1,9 @@
 /**
  * Core Scene Operations — Always exposed.
  *
- * read_scene, create_scene, add_node, modify_node, remove_node,
- * connect_signal, disconnect_signal, instance_scene
+ * Single unified tool: godot_scene
+ * Actions: read, create, add_node, modify_node, remove_node,
+ *          connect_signal, disconnect_signal, instance_scene
  */
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -17,62 +18,55 @@ import { parseVariant } from "../../utils/variant.js";
 import type { ToolContext } from "../registry.js";
 
 export function registerSceneOpsTools(server: McpServer, ctx: ToolContext): void {
-	// ── godot_read_scene ───────────────────────────────────────
 	server.tool(
-		"godot_read_scene",
-		"Parse a .tscn scene file into structured JSON showing the full node tree, properties, signal connections, and resources. Provide a res:// path.",
+		"godot_scene",
+		[
+			"Unified scene operations for .tscn files.",
+			"",
+			"Actions and their parameters:",
+			"",
+			'  read — Parse a scene into JSON. Params: path (required).',
+			'  create — Create a new scene. Params: path (required), rootType (required), rootName, scriptPath, children.',
+			'  add_node — Add a node to a scene. Params: scenePath (required), name (required), type (required), parent, properties, groups.',
+			'  modify_node — Modify node properties. Params: scenePath (required), nodePath (required), properties (required).',
+			'  remove_node — Remove a node and its subtree. Params: scenePath (required), nodePath (required).',
+			'  connect_signal — Connect a signal. Params: scenePath (required), signal (required), from (required), to (required), method (required).',
+			'  disconnect_signal — Disconnect a signal. Params: scenePath (required), signal (required), from (required), to (required), method (required).',
+			'  instance_scene — Instance a PackedScene as a child. Params: scenePath (required), instancePath (required), name (required), parent, properties.',
+		].join("\n"),
 		{
-			path: z.string().describe('Scene path (res:// format, e.g., "res://scenes/player.tscn")'),
-		},
-		async ({ path }) => {
-			try {
-				const absPath = resToAbsolute(path, ctx.projectRoot);
-				const content = readFileSync(absPath, "utf-8");
-				const doc = parseTscn(content);
+			action: z
+				.enum([
+					"read",
+					"create",
+					"add_node",
+					"modify_node",
+					"remove_node",
+					"connect_signal",
+					"disconnect_signal",
+					"instance_scene",
+				])
+				.describe("The scene operation to perform"),
 
-				// Build a tree view for readability
-				const tree = buildNodeTree(doc);
+			// read
+			path: z
+				.string()
+				.optional()
+				.describe('Scene path in res:// format. Used by: read, create.'),
 
-				return {
-					content: [
-						{
-							type: "text",
-							text: JSON.stringify(
-								{
-									path,
-									descriptor: doc.descriptor,
-									extResources: doc.extResources,
-									subResources: doc.subResources,
-									nodeTree: tree,
-									connections: doc.connections,
-									nodeCount: doc.nodes.length,
-								},
-								null,
-								2,
-							),
-						},
-					],
-				};
-			} catch (e) {
-				return {
-					content: [{ type: "text", text: `Error reading scene: ${e}` }],
-					isError: true,
-				};
-			}
-		},
-	);
-
-	// ── godot_create_scene ─────────────────────────────────────
-	server.tool(
-		"godot_create_scene",
-		"Create a new .tscn scene file with a root node. Optionally add child nodes and attach a script.",
-		{
-			path: z.string().describe('Scene path (res:// format, e.g., "res://scenes/enemy.tscn")'),
+			// create
 			rootType: z
 				.string()
-				.describe('Root node type (e.g., "Node2D", "CharacterBody3D", "Control")'),
-			rootName: z.string().optional().describe("Root node name (defaults to filename)"),
-			scriptPath: z.string().optional().describe("res:// path to a GDScript to attach to root"),
+				.optional()
+				.describe('Root node type (e.g., "Node2D", "CharacterBody3D"). Used by: create.'),
+			rootName: z
+				.string()
+				.optional()
+				.describe("Root node name (defaults to filename). Used by: create."),
+			scriptPath: z
+				.string()
+				.optional()
+				.describe("res:// path to a GDScript to attach to root. Used by: create."),
 			children: z
 				.array(
 					z.object({
@@ -82,397 +76,450 @@ export function registerSceneOpsTools(server: McpServer, ctx: ToolContext): void
 					}),
 				)
 				.optional()
-				.describe("Child nodes to add under root"),
-		},
-		async ({ path, rootType, rootName, scriptPath, children }) => {
-			try {
-				const absPath = resToAbsolute(path, ctx.projectRoot);
-				const baseName = path.split("/").pop()?.replace(".tscn", "") ?? "Root";
+				.describe("Child nodes to add under root. Used by: create."),
 
-				const doc: TscnDocument = {
-					descriptor: { type: "gd_scene", format: 3, uid: generateUid() },
-					extResources: [],
-					subResources: [],
-					nodes: [],
-					connections: [],
-				};
+			// add_node, modify_node, remove_node, connect_signal, disconnect_signal, instance_scene
+			scenePath: z
+				.string()
+				.optional()
+				.describe("Scene path in res:// format. Used by: add_node, modify_node, remove_node, connect_signal, disconnect_signal, instance_scene."),
 
-				// Root node
-				const rootNode: TscnNode = {
-					name: rootName ?? baseName,
-					type: rootType,
-					properties: {},
-				};
+			// add_node, instance_scene
+			name: z
+				.string()
+				.optional()
+				.describe('Node name. Used by: add_node, instance_scene.'),
 
-				// Attach script if provided
-				if (scriptPath) {
-					const scriptId = generateResourceId();
-					doc.extResources.push({
-						type: "Script",
-						uid: generateUid(),
-						path: scriptPath,
-						id: scriptId,
-					});
-					rootNode.properties.script = { type: "ExtResource", id: scriptId };
-				}
+			// add_node
+			type: z
+				.string()
+				.optional()
+				.describe('Node type (e.g., "Sprite2D"). Used by: add_node.'),
 
-				doc.nodes.push(rootNode);
-
-				// Add children
-				if (children) {
-					for (const child of children) {
-						const childNode: TscnNode = {
-							name: child.name,
-							type: child.type,
-							parent: ".",
-							properties: {},
-						};
-						if (child.properties) {
-							for (const [k, v] of Object.entries(child.properties)) {
-								childNode.properties[k] = parseVariant(v);
-							}
-						}
-						doc.nodes.push(childNode);
-					}
-				}
-
-				const output = writeTscn(doc);
-				writeFileSync(absPath, output, "utf-8");
-				ctx.getAssetManager().invalidate();
-
-				return {
-					content: [
-						{
-							type: "text",
-							text: `Created scene at ${path} with root ${rootType} "${rootNode.name}" and ${(children?.length ?? 0)} children.`,
-						},
-					],
-				};
-			} catch (e) {
-				return {
-					content: [{ type: "text", text: `Error creating scene: ${e}` }],
-					isError: true,
-				};
-			}
-		},
-	);
-
-	// ── godot_add_node ─────────────────────────────────────────
-	server.tool(
-		"godot_add_node",
-		"Add a node to an existing scene. Specify the parent path relative to root.",
-		{
-			scenePath: z.string().describe("Scene path (res:// format)"),
-			name: z.string().describe("Node name"),
-			type: z.string().describe('Node type (e.g., "Sprite2D", "CollisionShape3D")'),
+			// add_node, instance_scene
 			parent: z
 				.string()
 				.optional()
-				.default(".")
-				.describe('Parent node path relative to root (e.g., ".", "Body/Arm")'),
+				.describe('Parent node path relative to root (e.g., ".", "Body/Arm"). Used by: add_node, instance_scene. Defaults to ".".'),
+
+			// add_node, modify_node, instance_scene
 			properties: z
 				.record(z.string(), z.string())
 				.optional()
-				.describe("Properties as key-value pairs (values in Godot Variant format)"),
-			groups: z.array(z.string()).optional().describe("Node groups to add to"),
-		},
-		async ({ scenePath, name, type, parent, properties, groups }) => {
-			try {
-				const absPath = resToAbsolute(scenePath, ctx.projectRoot);
-				const content = readFileSync(absPath, "utf-8");
-				const doc = parseTscn(content);
+				.describe("Properties as key-value pairs (values in Godot Variant format). Used by: add_node, modify_node, instance_scene."),
 
-				const node: TscnNode = {
-					name,
-					type,
-					parent,
-					properties: {},
-				};
+			// add_node
+			groups: z
+				.array(z.string())
+				.optional()
+				.describe("Node groups. Used by: add_node."),
 
-				if (properties) {
-					for (const [k, v] of Object.entries(properties)) {
-						node.properties[k] = parseVariant(v);
-					}
-				}
-
-				if (groups && groups.length > 0) {
-					node.groups = groups;
-				}
-
-				doc.nodes.push(node);
-
-				writeFileSync(absPath, writeTscn(doc), "utf-8");
-
-				return {
-					content: [
-						{
-							type: "text",
-							text: `Added ${type} "${name}" under "${parent}" in ${scenePath}.`,
-						},
-					],
-				};
-			} catch (e) {
-				return {
-					content: [{ type: "text", text: `Error adding node: ${e}` }],
-					isError: true,
-				};
-			}
-		},
-	);
-
-	// ── godot_modify_node ──────────────────────────────────────
-	server.tool(
-		"godot_modify_node",
-		"Modify properties of an existing node in a scene.",
-		{
-			scenePath: z.string().describe("Scene path (res:// format)"),
+			// modify_node, remove_node
 			nodePath: z
 				.string()
-				.describe('Node path (e.g., "." for root, "Player", "Player/Sprite")'),
-			properties: z
-				.record(z.string(), z.string())
-				.describe("Properties to set (values in Godot Variant format)"),
-		},
-		async ({ scenePath, nodePath, properties }) => {
-			try {
-				const absPath = resToAbsolute(scenePath, ctx.projectRoot);
-				const content = readFileSync(absPath, "utf-8");
-				const doc = parseTscn(content);
+				.optional()
+				.describe('Node path (e.g., "." for root, "Player/Sprite"). Used by: modify_node, remove_node.'),
 
-				const node = findNode(doc, nodePath);
-				if (!node) {
-					return {
-						content: [{ type: "text", text: `Node "${nodePath}" not found in scene.` }],
-						isError: true,
-					};
-				}
+			// connect_signal, disconnect_signal
+			signal: z
+				.string()
+				.optional()
+				.describe('Signal name (e.g., "body_entered", "pressed"). Used by: connect_signal, disconnect_signal.'),
+			from: z
+				.string()
+				.optional()
+				.describe('Source node path. Used by: connect_signal, disconnect_signal.'),
+			to: z
+				.string()
+				.optional()
+				.describe('Target node path. Used by: connect_signal, disconnect_signal.'),
+			method: z
+				.string()
+				.optional()
+				.describe('Method name on target. Used by: connect_signal, disconnect_signal.'),
 
-				for (const [k, v] of Object.entries(properties)) {
-					node.properties[k] = parseVariant(v);
-				}
-
-				writeFileSync(absPath, writeTscn(doc), "utf-8");
-
-				return {
-					content: [
-						{
-							type: "text",
-							text: `Modified ${Object.keys(properties).length} properties on "${nodePath}" in ${scenePath}.`,
-						},
-					],
-				};
-			} catch (e) {
-				return {
-					content: [{ type: "text", text: `Error modifying node: ${e}` }],
-					isError: true,
-				};
-			}
-		},
-	);
-
-	// ── godot_remove_node ──────────────────────────────────────
-	server.tool(
-		"godot_remove_node",
-		"Remove a node (and its entire subtree) from a scene. Also removes signal connections involving the node.",
-		{
-			scenePath: z.string().describe("Scene path (res:// format)"),
-			nodePath: z.string().describe('Node path to remove (e.g., "Enemy", "UI/HealthBar")'),
-		},
-		async ({ scenePath, nodePath }) => {
-			try {
-				const absPath = resToAbsolute(scenePath, ctx.projectRoot);
-				const content = readFileSync(absPath, "utf-8");
-				const doc = parseTscn(content);
-
-				const fullPath = resolveFullNodePath(doc, nodePath);
-				const before = doc.nodes.length;
-
-				// Remove the node and all children
-				doc.nodes = doc.nodes.filter((n) => {
-					const nPath = getNodeFullPath(doc, n);
-					return nPath !== fullPath && !nPath.startsWith(`${fullPath}/`);
-				});
-
-				// Remove connections involving removed nodes
-				doc.connections = doc.connections.filter(
-					(c) => !isUnderPath(c.from, fullPath) && !isUnderPath(c.to, fullPath),
-				);
-
-				const removed = before - doc.nodes.length;
-				writeFileSync(absPath, writeTscn(doc), "utf-8");
-
-				return {
-					content: [
-						{
-							type: "text",
-							text: `Removed ${removed} node(s) at "${nodePath}" from ${scenePath}.`,
-						},
-					],
-				};
-			} catch (e) {
-				return {
-					content: [{ type: "text", text: `Error removing node: ${e}` }],
-					isError: true,
-				};
-			}
-		},
-	);
-
-	// ── godot_connect_signal ───────────────────────────────────
-	server.tool(
-		"godot_connect_signal",
-		"Connect a signal between nodes in a scene.",
-		{
-			scenePath: z.string().describe("Scene path (res:// format)"),
-			signal: z.string().describe('Signal name (e.g., "body_entered", "pressed")'),
-			from: z.string().describe('Source node path (e.g., ".", "Area2D")'),
-			to: z.string().describe('Target node path (e.g., ".", "Player")'),
-			method: z.string().describe('Method name on target (e.g., "_on_body_entered")'),
-		},
-		async ({ scenePath, signal, from, to, method }) => {
-			try {
-				const absPath = resToAbsolute(scenePath, ctx.projectRoot);
-				const content = readFileSync(absPath, "utf-8");
-				const doc = parseTscn(content);
-
-				doc.connections.push({ signal, from, to, method });
-
-				writeFileSync(absPath, writeTscn(doc), "utf-8");
-
-				return {
-					content: [
-						{
-							type: "text",
-							text: `Connected ${signal} from "${from}" to "${to}::${method}" in ${scenePath}.`,
-						},
-					],
-				};
-			} catch (e) {
-				return {
-					content: [{ type: "text", text: `Error connecting signal: ${e}` }],
-					isError: true,
-				};
-			}
-		},
-	);
-
-	// ── godot_disconnect_signal ────────────────────────────────
-	server.tool(
-		"godot_disconnect_signal",
-		"Remove a signal connection from a scene.",
-		{
-			scenePath: z.string().describe("Scene path (res:// format)"),
-			signal: z.string().describe("Signal name"),
-			from: z.string().describe("Source node path"),
-			to: z.string().describe("Target node path"),
-			method: z.string().describe("Method name"),
-		},
-		async ({ scenePath, signal, from, to, method }) => {
-			try {
-				const absPath = resToAbsolute(scenePath, ctx.projectRoot);
-				const content = readFileSync(absPath, "utf-8");
-				const doc = parseTscn(content);
-
-				const before = doc.connections.length;
-				doc.connections = doc.connections.filter(
-					(c) =>
-						!(
-							c.signal === signal &&
-							c.from === from &&
-							c.to === to &&
-							c.method === method
-						),
-				);
-
-				writeFileSync(absPath, writeTscn(doc), "utf-8");
-
-				return {
-					content: [
-						{
-							type: "text",
-							text:
-								before > doc.connections.length
-									? `Disconnected ${signal} from "${from}" to "${to}::${method}".`
-									: "No matching connection found.",
-						},
-					],
-				};
-			} catch (e) {
-				return {
-					content: [{ type: "text", text: `Error disconnecting signal: ${e}` }],
-					isError: true,
-				};
-			}
-		},
-	);
-
-	// ── godot_instance_scene ───────────────────────────────────
-	server.tool(
-		"godot_instance_scene",
-		"Add a scene instance (PackedScene) as a child node in another scene.",
-		{
-			scenePath: z.string().describe("Parent scene path (res:// format)"),
+			// instance_scene
 			instancePath: z
 				.string()
-				.describe('Scene to instance (res:// path, e.g., "res://scenes/enemy.tscn")'),
-			name: z.string().describe("Instance node name"),
-			parent: z
-				.string()
 				.optional()
-				.default(".")
-				.describe("Parent node path in the scene"),
-			properties: z
-				.record(z.string(), z.string())
-				.optional()
-				.describe("Property overrides for the instance"),
+				.describe('Scene to instance (res:// path). Used by: instance_scene.'),
 		},
-		async ({ scenePath, instancePath, name, parent, properties }) => {
-			try {
-				const absPath = resToAbsolute(scenePath, ctx.projectRoot);
-				const content = readFileSync(absPath, "utf-8");
-				const doc = parseTscn(content);
+		async (params) => {
+			switch (params.action) {
+				// ── read ──────────────────────────────────────────
+				case "read": {
+					const path = requireParam(params.path, "path", "read");
+					try {
+						const absPath = resToAbsolute(path, ctx.projectRoot);
+						const content = readFileSync(absPath, "utf-8");
+						const doc = parseTscn(content);
+						const tree = buildNodeTree(doc);
 
-				// Add ext_resource for the instanced scene
-				const resId = generateResourceId();
-				doc.extResources.push({
-					type: "PackedScene",
-					uid: generateUid(),
-					path: instancePath,
-					id: resId,
-				});
-
-				const node: TscnNode = {
-					name,
-					parent,
-					instance: { type: "ExtResource", id: resId },
-					properties: {},
-				};
-
-				if (properties) {
-					for (const [k, v] of Object.entries(properties)) {
-						node.properties[k] = parseVariant(v);
+						return {
+							content: [
+								{
+									type: "text",
+									text: JSON.stringify(
+										{
+											path,
+											descriptor: doc.descriptor,
+											extResources: doc.extResources,
+											subResources: doc.subResources,
+											nodeTree: tree,
+											connections: doc.connections,
+											nodeCount: doc.nodes.length,
+										},
+										null,
+										2,
+									),
+								},
+							],
+						};
+					} catch (e) {
+						return {
+							content: [{ type: "text", text: `Error reading scene: ${e}` }],
+							isError: true,
+						};
 					}
 				}
 
-				doc.nodes.push(node);
-				writeFileSync(absPath, writeTscn(doc), "utf-8");
+				// ── create ───────────────────────────────────────
+				case "create": {
+					const path = requireParam(params.path, "path", "create");
+					const rootType = requireParam(params.rootType, "rootType", "create");
+					try {
+						const absPath = resToAbsolute(path, ctx.projectRoot);
+						const baseName = path.split("/").pop()?.replace(".tscn", "") ?? "Root";
 
-				return {
-					content: [
-						{
-							type: "text",
-							text: `Added instance of ${instancePath} as "${name}" under "${parent}" in ${scenePath}.`,
-						},
-					],
-				};
-			} catch (e) {
-				return {
-					content: [{ type: "text", text: `Error instancing scene: ${e}` }],
-					isError: true,
-				};
+						const doc: TscnDocument = {
+							descriptor: { type: "gd_scene", format: 3, uid: generateUid() },
+							extResources: [],
+							subResources: [],
+							nodes: [],
+							connections: [],
+						};
+
+						const rootNode: TscnNode = {
+							name: params.rootName ?? baseName,
+							type: rootType,
+							properties: {},
+						};
+
+						if (params.scriptPath) {
+							const scriptId = generateResourceId();
+							doc.extResources.push({
+								type: "Script",
+								uid: generateUid(),
+								path: params.scriptPath,
+								id: scriptId,
+							});
+							rootNode.properties.script = { type: "ExtResource", id: scriptId };
+						}
+
+						doc.nodes.push(rootNode);
+
+						if (params.children) {
+							for (const child of params.children) {
+								const childNode: TscnNode = {
+									name: child.name,
+									type: child.type,
+									parent: ".",
+									properties: {},
+								};
+								if (child.properties) {
+									for (const [k, v] of Object.entries(child.properties)) {
+										childNode.properties[k] = parseVariant(v);
+									}
+								}
+								doc.nodes.push(childNode);
+							}
+						}
+
+						const output = writeTscn(doc);
+						writeFileSync(absPath, output, "utf-8");
+						ctx.getAssetManager().invalidate();
+
+						return {
+							content: [
+								{
+									type: "text",
+									text: `Created scene at ${path} with root ${rootType} "${rootNode.name}" and ${(params.children?.length ?? 0)} children.`,
+								},
+							],
+						};
+					} catch (e) {
+						return {
+							content: [{ type: "text", text: `Error creating scene: ${e}` }],
+							isError: true,
+						};
+					}
+				}
+
+				// ── add_node ─────────────────────────────────────
+				case "add_node": {
+					const scenePath = requireParam(params.scenePath, "scenePath", "add_node");
+					const name = requireParam(params.name, "name", "add_node");
+					const type = requireParam(params.type, "type", "add_node");
+					const parent = params.parent ?? ".";
+					try {
+						const absPath = resToAbsolute(scenePath, ctx.projectRoot);
+						const content = readFileSync(absPath, "utf-8");
+						const doc = parseTscn(content);
+
+						const node: TscnNode = {
+							name,
+							type,
+							parent,
+							properties: {},
+						};
+
+						if (params.properties) {
+							for (const [k, v] of Object.entries(params.properties)) {
+								node.properties[k] = parseVariant(v);
+							}
+						}
+
+						if (params.groups && params.groups.length > 0) {
+							node.groups = params.groups;
+						}
+
+						doc.nodes.push(node);
+						writeFileSync(absPath, writeTscn(doc), "utf-8");
+
+						return {
+							content: [
+								{
+									type: "text",
+									text: `Added ${type} "${name}" under "${parent}" in ${scenePath}.`,
+								},
+							],
+						};
+					} catch (e) {
+						return {
+							content: [{ type: "text", text: `Error adding node: ${e}` }],
+							isError: true,
+						};
+					}
+				}
+
+				// ── modify_node ──────────────────────────────────
+				case "modify_node": {
+					const scenePath = requireParam(params.scenePath, "scenePath", "modify_node");
+					const nodePath = requireParam(params.nodePath, "nodePath", "modify_node");
+					const properties = requireParam(params.properties, "properties", "modify_node");
+					try {
+						const absPath = resToAbsolute(scenePath, ctx.projectRoot);
+						const content = readFileSync(absPath, "utf-8");
+						const doc = parseTscn(content);
+
+						const node = findNode(doc, nodePath);
+						if (!node) {
+							return {
+								content: [{ type: "text", text: `Node "${nodePath}" not found in scene.` }],
+								isError: true,
+							};
+						}
+
+						for (const [k, v] of Object.entries(properties)) {
+							node.properties[k] = parseVariant(v);
+						}
+
+						writeFileSync(absPath, writeTscn(doc), "utf-8");
+
+						return {
+							content: [
+								{
+									type: "text",
+									text: `Modified ${Object.keys(properties).length} properties on "${nodePath}" in ${scenePath}.`,
+								},
+							],
+						};
+					} catch (e) {
+						return {
+							content: [{ type: "text", text: `Error modifying node: ${e}` }],
+							isError: true,
+						};
+					}
+				}
+
+				// ── remove_node ──────────────────────────────────
+				case "remove_node": {
+					const scenePath = requireParam(params.scenePath, "scenePath", "remove_node");
+					const nodePath = requireParam(params.nodePath, "nodePath", "remove_node");
+					try {
+						const absPath = resToAbsolute(scenePath, ctx.projectRoot);
+						const content = readFileSync(absPath, "utf-8");
+						const doc = parseTscn(content);
+
+						const fullPath = resolveFullNodePath(doc, nodePath);
+						const before = doc.nodes.length;
+
+						doc.nodes = doc.nodes.filter((n) => {
+							const nPath = getNodeFullPath(doc, n);
+							return nPath !== fullPath && !nPath.startsWith(`${fullPath}/`);
+						});
+
+						doc.connections = doc.connections.filter(
+							(c) => !isUnderPath(c.from, fullPath) && !isUnderPath(c.to, fullPath),
+						);
+
+						const removed = before - doc.nodes.length;
+						writeFileSync(absPath, writeTscn(doc), "utf-8");
+
+						return {
+							content: [
+								{
+									type: "text",
+									text: `Removed ${removed} node(s) at "${nodePath}" from ${scenePath}.`,
+								},
+							],
+						};
+					} catch (e) {
+						return {
+							content: [{ type: "text", text: `Error removing node: ${e}` }],
+							isError: true,
+						};
+					}
+				}
+
+				// ── connect_signal ────────────────────────────────
+				case "connect_signal": {
+					const scenePath = requireParam(params.scenePath, "scenePath", "connect_signal");
+					const signal = requireParam(params.signal, "signal", "connect_signal");
+					const from = requireParam(params.from, "from", "connect_signal");
+					const to = requireParam(params.to, "to", "connect_signal");
+					const method = requireParam(params.method, "method", "connect_signal");
+					try {
+						const absPath = resToAbsolute(scenePath, ctx.projectRoot);
+						const content = readFileSync(absPath, "utf-8");
+						const doc = parseTscn(content);
+
+						doc.connections.push({ signal, from, to, method });
+
+						writeFileSync(absPath, writeTscn(doc), "utf-8");
+
+						return {
+							content: [
+								{
+									type: "text",
+									text: `Connected ${signal} from "${from}" to "${to}::${method}" in ${scenePath}.`,
+								},
+							],
+						};
+					} catch (e) {
+						return {
+							content: [{ type: "text", text: `Error connecting signal: ${e}` }],
+							isError: true,
+						};
+					}
+				}
+
+				// ── disconnect_signal ─────────────────────────────
+				case "disconnect_signal": {
+					const scenePath = requireParam(params.scenePath, "scenePath", "disconnect_signal");
+					const signal = requireParam(params.signal, "signal", "disconnect_signal");
+					const from = requireParam(params.from, "from", "disconnect_signal");
+					const to = requireParam(params.to, "to", "disconnect_signal");
+					const method = requireParam(params.method, "method", "disconnect_signal");
+					try {
+						const absPath = resToAbsolute(scenePath, ctx.projectRoot);
+						const content = readFileSync(absPath, "utf-8");
+						const doc = parseTscn(content);
+
+						const before = doc.connections.length;
+						doc.connections = doc.connections.filter(
+							(c) =>
+								!(
+									c.signal === signal &&
+									c.from === from &&
+									c.to === to &&
+									c.method === method
+								),
+						);
+
+						writeFileSync(absPath, writeTscn(doc), "utf-8");
+
+						return {
+							content: [
+								{
+									type: "text",
+									text:
+										before > doc.connections.length
+											? `Disconnected ${signal} from "${from}" to "${to}::${method}".`
+											: "No matching connection found.",
+								},
+							],
+						};
+					} catch (e) {
+						return {
+							content: [{ type: "text", text: `Error disconnecting signal: ${e}` }],
+							isError: true,
+						};
+					}
+				}
+
+				// ── instance_scene ────────────────────────────────
+				case "instance_scene": {
+					const scenePath = requireParam(params.scenePath, "scenePath", "instance_scene");
+					const instancePath = requireParam(params.instancePath, "instancePath", "instance_scene");
+					const name = requireParam(params.name, "name", "instance_scene");
+					const parent = params.parent ?? ".";
+					try {
+						const absPath = resToAbsolute(scenePath, ctx.projectRoot);
+						const content = readFileSync(absPath, "utf-8");
+						const doc = parseTscn(content);
+
+						const resId = generateResourceId();
+						doc.extResources.push({
+							type: "PackedScene",
+							uid: generateUid(),
+							path: instancePath,
+							id: resId,
+						});
+
+						const node: TscnNode = {
+							name,
+							parent,
+							instance: { type: "ExtResource", id: resId },
+							properties: {},
+						};
+
+						if (params.properties) {
+							for (const [k, v] of Object.entries(params.properties)) {
+								node.properties[k] = parseVariant(v);
+							}
+						}
+
+						doc.nodes.push(node);
+						writeFileSync(absPath, writeTscn(doc), "utf-8");
+
+						return {
+							content: [
+								{
+									type: "text",
+									text: `Added instance of ${instancePath} as "${name}" under "${parent}" in ${scenePath}.`,
+								},
+							],
+						};
+					} catch (e) {
+						return {
+							content: [{ type: "text", text: `Error instancing scene: ${e}` }],
+							isError: true,
+						};
+					}
+				}
 			}
 		},
 	);
+}
+
+// ── Param validation helper ────────────────────────────────────
+
+function requireParam<T>(value: T | undefined, name: string, action: string): T {
+	if (value === undefined) {
+		throw new Error(`Missing required parameter "${name}" for action "${action}".`);
+	}
+	return value;
 }
 
 // ── Helpers ────────────────────────────────────────────────────
