@@ -114,6 +114,14 @@ function registerToolGroups(): void {
 	});
 
 	registerGroup({
+		name: "intelligence",
+		description: "LSP + DAP: GDScript diagnostics (errors without running), completions, hover info, go-to-definition, symbols, breakpoints, stepping, stack traces, variable inspection, expression evaluation",
+		toolCount: 10,
+		requiresPlugin: false,
+		register: (s, c) => { import("./tools/groups/intelligence.js").then((m) => m.registerIntelligenceTools(s, c)); },
+	});
+
+	registerGroup({
 		name: "debug",
 		description: "Live debugging (requires editor plugin): screenshots, scene tree inspection, node properties, input injection, performance metrics",
 		toolCount: 7,
