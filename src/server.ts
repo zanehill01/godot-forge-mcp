@@ -138,6 +138,14 @@ function registerToolGroups(): void {
 	});
 
 	registerGroup({
+		name: "game_essentials",
+		description: "Game dev essentials: SpriteFrames, input binding (keys/gamepad/mouse), Camera2D, scene validation, Curve/Gradient/StyleBox/AudioBusLayout resources, parallax backgrounds, 2D lights, multiplayer nodes, project integrity checker",
+		toolCount: 12,
+		requiresPlugin: false,
+		register: (s, c) => { import("./tools/groups/game-essentials.js").then((m) => m.registerGameEssentialsTools(s, c)); },
+	});
+
+	registerGroup({
 		name: "godot_standards",
 		description: "Godot 4.3/4.4: UID integrity/generation, export pipeline, CI/CD, GDExtension, plugin scaffolding, project linting, test frameworks (GUT/GdUnit4), .gitignore/.gitattributes, resource type analysis",
 		toolCount: 14,

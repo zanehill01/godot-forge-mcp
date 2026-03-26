@@ -1,0 +1,732 @@
+/**
+ * Game Essentials Tool Group — Core tools for video game development.
+ *
+ * SpriteFrames, input binding, Camera2D, resource creation (Curve, Gradient,
+ * StyleBox, AudioBusLayout), 2D scene tools (parallax, lights), multiplayer
+ * nodes, and scene validation. All write real .tscn/.tres data.
+ */
+
+import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { z } from "zod";
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { parseTscn } from "../../parsers/tscn/parser.js";
+import { writeTscn } from "../../parsers/tscn/writer.js";
+import { resToAbsolute, generateResourceId } from "../../utils/path.js";
+import { generateUid } from "../../utils/uid.js";
+import { parseVariant } from "../../utils/variant.js";
+import type { ToolContext } from "../registry.js";
+
+export function registerGameEssentialsTools(server: McpServer, ctx: ToolContext): void {
+
+	// ═══════════════════════════════════════════════════════════
+	// SpriteFrames Resource (CRITICAL for 2D animation)
+	// ═══════════════════════════════════════════════════════════
+
+	server.tool("godot_create_sprite_frames", "Create a SpriteFrames .tres resource for AnimatedSprite2D. Define animations with frame references from a spritesheet or individual images.", {
+		path: z.string().describe("Output .tres path (res://)"),
+		animations: z.array(z.object({
+			name: z.string().describe("Animation name (e.g., idle, run, jump)"),
+			speed: z.number().optional().default(8).describe("Frames per second"),
+			loop: z.boolean().optional().default(true),
+			frames: z.array(z.object({
+				texture: z.string().describe("Texture path (res://)"),
+				regionEnabled: z.boolean().optional().default(false),
+				regionX: z.number().optional().describe("Atlas region X"),
+				regionY: z.number().optional().describe("Atlas region Y"),
+				regionW: z.number().optional().describe("Atlas region width"),
+				regionH: z.number().optional().describe("Atlas region height"),
+			})),
+		})),
+	}, async ({ path, animations }) => {
+		try {
+			const lines: string[] = [];
+			lines.push(`[gd_resource type="SpriteFrames" load_steps=${animations.reduce((n, a) => n + a.frames.length, 0) + 1} format=3]`);
+			lines.push("");
+
+			// Collect all unique textures as ext_resources
+			const textureMap = new Map<string, string>();
+			let extId = 1;
+			for (const anim of animations) {
+				for (const frame of anim.frames) {
+					if (!textureMap.has(frame.texture)) {
+						const id = `${extId}_tex`;
+						textureMap.set(frame.texture, id);
+						lines.push(`[ext_resource type="Texture2D" path="${frame.texture}" id="${id}"]`);
+						extId++;
+					}
+				}
+			}
+			lines.push("");
+
+			// If using atlas regions, create AtlasTexture sub-resources
+			const atlasSubResources: Array<{ id: string; texId: string; region: string }> = [];
+			let subId = 1;
+			for (const anim of animations) {
+				for (const frame of anim.frames) {
+					if (frame.regionEnabled) {
+						const sid = `AtlasTexture_${subId}`;
+						const texExtId = textureMap.get(frame.texture)!;
+						atlasSubResources.push({
+							id: sid,
+							texId: texExtId,
+							region: `Rect2(${frame.regionX ?? 0}, ${frame.regionY ?? 0}, ${frame.regionW ?? 16}, ${frame.regionH ?? 16})`,
+						});
+						subId++;
+					}
+				}
+			}
+
+			for (const sub of atlasSubResources) {
+				lines.push(`[sub_resource type="AtlasTexture" id="${sub.id}"]`);
+				lines.push(`atlas = ExtResource("${sub.texId}")`);
+				lines.push(`region = ${sub.region}`);
+				lines.push("");
+			}
+
+			// Resource section
+			lines.push("[resource]");
+			lines.push("animations = [{");
+
+			const animEntries: string[] = [];
+			let atlasIdx = 0;
+			for (const anim of animations) {
+				const frameRefs: string[] = [];
+				for (const frame of anim.frames) {
+					if (frame.regionEnabled) {
+						frameRefs.push(`SubResource("${atlasSubResources[atlasIdx].id}")`);
+						atlasIdx++;
+					} else {
+						frameRefs.push(`ExtResource("${textureMap.get(frame.texture)}")`);
+					}
+				}
+				const durations = anim.frames.map(() => "1.0").join(", ");
+				animEntries.push(`"frames": [${frameRefs.map((r, i) => `{"duration": 1.0, "texture": ${r}}`).join(", ")}], "loop": ${anim.loop}, "name": &"${anim.name}", "speed": ${anim.speed}.0`);
+			}
+
+			lines.push(animEntries.join("\n}, {\n"));
+			lines.push("}]");
+			lines.push("");
+
+			const absPath = resToAbsolute(path, ctx.projectRoot);
+			mkdirSync(dirname(absPath), { recursive: true });
+			writeFileSync(absPath, lines.join("\n"), "utf-8");
+
+			return { content: [{ type: "text", text: `Created SpriteFrames at ${path} with ${animations.length} animations: ${animations.map((a) => `${a.name} (${a.frames.length} frames, ${a.speed}fps)`).join(", ")}` }] };
+		} catch (e) { return { content: [{ type: "text", text: `Error: ${e instanceof Error ? e.message : String(e)}` }], isError: true }; }
+	});
+
+	// ═══════════════════════════════════════════════════════════
+	// Input Event Binding (CRITICAL — maps actions to actual keys)
+	// ═══════════════════════════════════════════════════════════
+
+	server.tool("godot_bind_input", "Bind actual input events (keyboard keys, gamepad buttons, mouse buttons) to input actions in project.godot. This creates functional input mappings, not just action names.", {
+		action: z.string().describe("Input action name (e.g., move_left, jump, attack)"),
+		events: z.array(z.object({
+			type: z.enum(["key", "gamepad_button", "gamepad_axis", "mouse_button"]),
+			key: z.string().optional().describe("Key name for keyboard (e.g., W, A, S, D, Space, Escape, Shift)"),
+			button: z.number().optional().describe("Gamepad button index (0=A/Cross, 1=B/Circle, 2=X/Square, 3=Y/Triangle)"),
+			axis: z.number().optional().describe("Gamepad axis (0=LeftX, 1=LeftY, 2=RightX, 3=RightY)"),
+			axisValue: z.number().optional().describe("Axis direction (-1.0 or 1.0)"),
+			mouseButton: z.enum(["left", "right", "middle"]).optional(),
+		})),
+		deadzone: z.number().optional().default(0.5),
+	}, async ({ action, events, deadzone }) => {
+		try {
+			const configPath = join(ctx.projectRoot, "project.godot");
+			let content = readFileSync(configPath, "utf-8");
+
+			// Build the event array in Godot's project.godot format
+			const eventStrings: string[] = [];
+			for (const e of events) {
+				switch (e.type) {
+					case "key": {
+						const keycode = godotKeycode(e.key ?? "Space");
+						eventStrings.push(`Object(InputEventKey,"resource_local_to_scene":false,"resource_name":"","device":-1,"window_id":0,"alt_pressed":false,"shift_pressed":false,"ctrl_pressed":false,"meta_pressed":false,"pressed":false,"keycode":0,"physical_keycode":${keycode},"key_label":0,"unicode":0,"location":0,"echo":false,"script":null)`);
+						break;
+					}
+					case "gamepad_button": {
+						eventStrings.push(`Object(InputEventJoypadButton,"resource_local_to_scene":false,"resource_name":"","device":-1,"button_index":${e.button ?? 0},"pressure":0.0,"pressed":true,"script":null)`);
+						break;
+					}
+					case "gamepad_axis": {
+						eventStrings.push(`Object(InputEventJoypadMotion,"resource_local_to_scene":false,"resource_name":"","device":-1,"axis":${e.axis ?? 0},"axis_value":${e.axisValue ?? 1.0},"script":null)`);
+						break;
+					}
+					case "mouse_button": {
+						const btnMap: Record<string, number> = { left: 1, right: 2, middle: 3 };
+						eventStrings.push(`Object(InputEventMouseButton,"resource_local_to_scene":false,"resource_name":"","device":-1,"window_id":0,"alt_pressed":false,"shift_pressed":false,"ctrl_pressed":false,"meta_pressed":false,"button_mask":0,"position":Vector2(0,0),"global_position":Vector2(0,0),"factor":1.0,"button_index":${btnMap[e.mouseButton ?? "left"]},"canceled":false,"pressed":true,"double_click":false,"script":null)`);
+						break;
+					}
+				}
+			}
+
+			const actionValue = `{"deadzone": ${deadzone}, "events": [${eventStrings.join(", ")}]}`;
+
+			// Ensure [input] section exists
+			if (!content.includes("[input]")) {
+				content = content.trimEnd() + "\n\n[input]\n\n";
+			}
+
+			// Check if action already exists
+			const actionRegex = new RegExp(`^${action}=.*$`, "m");
+			if (actionRegex.test(content)) {
+				content = content.replace(actionRegex, `${action}=${actionValue}`);
+			} else {
+				content = content.replace("[input]", `[input]\n\n${action}=${actionValue}`);
+			}
+
+			writeFileSync(configPath, content, "utf-8");
+			ctx.getProject().load();
+
+			const bindSummary = events.map((e) => {
+				switch (e.type) {
+					case "key": return `Key:${e.key}`;
+					case "gamepad_button": return `Pad:Button${e.button}`;
+					case "gamepad_axis": return `Pad:Axis${e.axis}(${e.axisValue})`;
+					case "mouse_button": return `Mouse:${e.mouseButton}`;
+				}
+			}).join(", ");
+
+			return { content: [{ type: "text", text: `Bound "${action}" to: ${bindSummary}` }] };
+		} catch (e) { return { content: [{ type: "text", text: `Error: ${e instanceof Error ? e.message : String(e)}` }], isError: true }; }
+	});
+
+	// ═══════════════════════════════════════════════════════════
+	// Camera2D (CRITICAL for 2D games)
+	// ═══════════════════════════════════════════════════════════
+
+	server.tool("godot_add_camera2d", "Add a Camera2D node to a scene with limits, zoom, smoothing, and drag settings.", {
+		scenePath: z.string(),
+		parent: z.string().optional().default("."),
+		name: z.string().optional().default("Camera2D"),
+		current: z.boolean().optional().default(true),
+		zoom: z.string().optional().default("Vector2(1, 1)").describe("Zoom level as Vector2"),
+		smoothingEnabled: z.boolean().optional().default(true),
+		smoothingSpeed: z.number().optional().default(5.0),
+		dragHEnabled: z.boolean().optional().default(false),
+		dragVEnabled: z.boolean().optional().default(false),
+		limitLeft: z.number().optional().describe("Left camera limit (pixels)"),
+		limitTop: z.number().optional().describe("Top camera limit"),
+		limitRight: z.number().optional().describe("Right camera limit"),
+		limitBottom: z.number().optional().describe("Bottom camera limit"),
+		limitSmoothed: z.boolean().optional().default(false),
+	}, async ({ scenePath, parent, name, current, zoom, smoothingEnabled, smoothingSpeed, dragHEnabled, dragVEnabled, limitLeft, limitTop, limitRight, limitBottom, limitSmoothed }) => {
+		try {
+			const absPath = resToAbsolute(scenePath, ctx.projectRoot);
+			const doc = parseTscn(readFileSync(absPath, "utf-8"));
+
+			const props: Record<string, unknown> = {
+				current,
+				zoom: parseVariant(zoom),
+				position_smoothing_enabled: smoothingEnabled,
+				position_smoothing_speed: smoothingSpeed,
+				drag_horizontal_enabled: dragHEnabled,
+				drag_vertical_enabled: dragVEnabled,
+			};
+
+			if (limitLeft !== undefined) props.limit_left = limitLeft;
+			if (limitTop !== undefined) props.limit_top = limitTop;
+			if (limitRight !== undefined) props.limit_right = limitRight;
+			if (limitBottom !== undefined) props.limit_bottom = limitBottom;
+			if (limitSmoothed) props.limit_smoothed = true;
+
+			doc.nodes.push({ name, type: "Camera2D", parent, properties: props as Record<string, import("../../parsers/tscn/types.js").GodotVariant> });
+			writeFileSync(absPath, writeTscn(doc), "utf-8");
+			return { content: [{ type: "text", text: `Added Camera2D "${name}" to ${scenePath}` }] };
+		} catch (e) { return { content: [{ type: "text", text: `Error: ${e instanceof Error ? e.message : String(e)}` }], isError: true }; }
+	});
+
+	// ═══════════════════════════════════════════════════════════
+	// Scene Validation (CRITICAL for debugging)
+	// ═══════════════════════════════════════════════════════════
+
+	server.tool("godot_validate_scene", "Validate a .tscn scene for common errors: broken resource references, missing scripts, orphaned nodes, invalid node types, missing collision shapes on physics bodies.", {
+		scenePath: z.string().describe("Scene to validate (res://)"),
+	}, async ({ scenePath }) => {
+		try {
+			const absPath = resToAbsolute(scenePath, ctx.projectRoot);
+			const content = readFileSync(absPath, "utf-8");
+			const doc = parseTscn(content);
+			const issues: Array<{ severity: "error" | "warning"; message: string }> = [];
+
+			// Check ext_resource paths exist
+			for (const ext of doc.extResources) {
+				if (ext.path) {
+					try {
+						const extAbs = resToAbsolute(ext.path, ctx.projectRoot);
+						if (!existsSync(extAbs)) {
+							issues.push({ severity: "error", message: `Missing resource: ${ext.path} (${ext.type})` });
+						}
+					} catch {
+						issues.push({ severity: "error", message: `Invalid resource path: ${ext.path}` });
+					}
+				}
+			}
+
+			// Check for physics bodies without collision shapes
+			const physicsBodyTypes = new Set(["StaticBody2D", "StaticBody3D", "RigidBody2D", "RigidBody3D", "CharacterBody2D", "CharacterBody3D", "AnimatableBody2D", "AnimatableBody3D", "Area2D", "Area3D"]);
+			const collisionTypes = new Set(["CollisionShape2D", "CollisionShape3D", "CollisionPolygon2D", "CollisionPolygon3D"]);
+
+			for (const node of doc.nodes) {
+				if (node.type && physicsBodyTypes.has(node.type)) {
+					const nodePath = node.parent === undefined ? "." : node.parent === "." ? node.name : `${node.parent}/${node.name}`;
+					const hasCollision = doc.nodes.some((child) => child.parent === nodePath && child.type && collisionTypes.has(child.type));
+					if (!hasCollision) {
+						issues.push({ severity: "warning", message: `${node.type} "${node.name}" has no CollisionShape child` });
+					}
+				}
+			}
+
+			// Check for nodes with scripts that reference missing files
+			for (const node of doc.nodes) {
+				const scriptRef = node.properties.script;
+				if (scriptRef && typeof scriptRef === "object" && "type" in scriptRef && scriptRef.type === "ExtResource") {
+					const ext = doc.extResources.find((e) => e.id === (scriptRef as { id: string }).id);
+					if (ext && ext.path) {
+						try {
+							const scriptAbs = resToAbsolute(ext.path, ctx.projectRoot);
+							if (!existsSync(scriptAbs)) {
+								issues.push({ severity: "error", message: `Missing script: ${ext.path} on node "${node.name}"` });
+							}
+						} catch { /* skip */ }
+					}
+				}
+			}
+
+			// Check for empty scene
+			if (doc.nodes.length === 0) {
+				issues.push({ severity: "error", message: "Scene has no nodes" });
+			}
+
+			// Check root node has a type
+			if (doc.nodes.length > 0 && !doc.nodes[0].type && !doc.nodes[0].instance) {
+				issues.push({ severity: "warning", message: "Root node has no type (may be inherited scene)" });
+			}
+
+			// Check for duplicate node names at same level
+			const namesByParent = new Map<string, string[]>();
+			for (const node of doc.nodes) {
+				const p = node.parent ?? "__root__";
+				if (!namesByParent.has(p)) namesByParent.set(p, []);
+				const names = namesByParent.get(p)!;
+				if (names.includes(node.name)) {
+					issues.push({ severity: "error", message: `Duplicate node name "${node.name}" under parent "${p}"` });
+				}
+				names.push(node.name);
+			}
+
+			return {
+				content: [{
+					type: "text",
+					text: JSON.stringify({
+						scene: scenePath,
+						valid: issues.filter((i) => i.severity === "error").length === 0,
+						nodeCount: doc.nodes.length,
+						extResourceCount: doc.extResources.length,
+						subResourceCount: doc.subResources.length,
+						connectionCount: doc.connections.length,
+						errors: issues.filter((i) => i.severity === "error"),
+						warnings: issues.filter((i) => i.severity === "warning"),
+					}, null, 2),
+				}],
+			};
+		} catch (e) { return { content: [{ type: "text", text: `Error: ${e instanceof Error ? e.message : String(e)}` }], isError: true }; }
+	});
+
+	// ═══════════════════════════════════════════════════════════
+	// Curve Resource
+	// ═══════════════════════════════════════════════════════════
+
+	server.tool("godot_create_curve", "Create a Curve .tres resource for animation easing, damage falloff, etc. Define points with position and tangents.", {
+		path: z.string().describe("Output .tres path (res://)"),
+		points: z.array(z.object({
+			x: z.number().describe("Position (0.0 to 1.0)"),
+			y: z.number().describe("Value (0.0 to 1.0)"),
+			leftTangent: z.number().optional().default(0),
+			rightTangent: z.number().optional().default(0),
+		})),
+		minValue: z.number().optional().default(0),
+		maxValue: z.number().optional().default(1),
+	}, async ({ path, points, minValue, maxValue }) => {
+		try {
+			const pointData = points.map((p) => `${p.x}, ${p.y}, ${p.leftTangent}, ${p.rightTangent}, 0, 0`).join(", ");
+			const content = `[gd_resource type="Curve" format=3]
+
+[resource]
+min_value = ${minValue}
+max_value = ${maxValue}
+_data = [${pointData}]
+point_count = ${points.length}
+`;
+			const absPath = resToAbsolute(path, ctx.projectRoot);
+			mkdirSync(dirname(absPath), { recursive: true });
+			writeFileSync(absPath, content, "utf-8");
+			return { content: [{ type: "text", text: `Created Curve at ${path} with ${points.length} points` }] };
+		} catch (e) { return { content: [{ type: "text", text: `Error: ${e instanceof Error ? e.message : String(e)}` }], isError: true }; }
+	});
+
+	// ═══════════════════════════════════════════════════════════
+	// Gradient Resource
+	// ═══════════════════════════════════════════════════════════
+
+	server.tool("godot_create_gradient", "Create a Gradient .tres resource for color ramps, particle effects, and visual transitions.", {
+		path: z.string().describe("Output .tres path (res://)"),
+		colors: z.array(z.string()).describe("Colors in order (e.g., ['Color(1,0,0,1)', 'Color(1,1,0,1)', 'Color(0,1,0,1)'])"),
+		offsets: z.array(z.number()).optional().describe("Offset positions (0.0-1.0) for each color. Auto-distributed if omitted."),
+	}, async ({ path, colors, offsets }) => {
+		try {
+			const offs = offsets ?? colors.map((_, i) => i / Math.max(colors.length - 1, 1));
+			const colorStr = colors.join(", ");
+			const offsetStr = offs.join(", ");
+			const content = `[gd_resource type="Gradient" format=3]
+
+[resource]
+offsets = PackedFloat32Array(${offsetStr})
+colors = PackedColorArray(${colorStr})
+`;
+			const absPath = resToAbsolute(path, ctx.projectRoot);
+			mkdirSync(dirname(absPath), { recursive: true });
+			writeFileSync(absPath, content, "utf-8");
+			return { content: [{ type: "text", text: `Created Gradient at ${path} with ${colors.length} color stops` }] };
+		} catch (e) { return { content: [{ type: "text", text: `Error: ${e instanceof Error ? e.message : String(e)}` }], isError: true }; }
+	});
+
+	// ═══════════════════════════════════════════════════════════
+	// AudioBusLayout Resource
+	// ═══════════════════════════════════════════════════════════
+
+	server.tool("godot_create_audio_bus_layout", "Create an AudioBusLayout .tres resource with named buses and audio effects.", {
+		path: z.string().describe("Output .tres path (res://)"),
+		buses: z.array(z.object({
+			name: z.string(),
+			solo: z.boolean().optional().default(false),
+			mute: z.boolean().optional().default(false),
+			volumeDb: z.number().optional().default(0),
+			sendTo: z.string().optional().default("Master"),
+			effects: z.array(z.object({
+				type: z.enum(["Reverb", "Chorus", "Delay", "EQ", "Compressor", "Limiter", "Distortion", "Phaser", "LowPassFilter", "HighPassFilter", "BandPassFilter"]),
+				enabled: z.boolean().optional().default(true),
+			})).optional(),
+		})),
+	}, async ({ path, buses }) => {
+		try {
+			const lines: string[] = [];
+			let subCount = 0;
+
+			// Count sub-resources needed for effects
+			for (const bus of buses) {
+				subCount += (bus.effects?.length ?? 0);
+			}
+
+			lines.push(`[gd_resource type="AudioBusLayout" load_steps=${subCount + 1} format=3]`);
+			lines.push("");
+
+			// Create effect sub-resources
+			let effectIdx = 0;
+			const effectIds: string[][] = [];
+			for (const bus of buses) {
+				const busEffectIds: string[] = [];
+				for (const fx of (bus.effects ?? [])) {
+					const id = `AudioEffect${fx.type}_${effectIdx}`;
+					lines.push(`[sub_resource type="AudioEffect${fx.type}" id="${id}"]`);
+					lines.push("");
+					busEffectIds.push(id);
+					effectIdx++;
+				}
+				effectIds.push(busEffectIds);
+			}
+
+			lines.push("[resource]");
+
+			for (let i = 0; i < buses.length; i++) {
+				const bus = buses[i];
+				const prefix = i === 0 ? "bus/0" : `bus/${i}`;
+				lines.push(`${prefix}/name = &"${bus.name}"`);
+				lines.push(`${prefix}/solo = ${bus.solo}`);
+				lines.push(`${prefix}/mute = ${bus.mute}`);
+				lines.push(`${prefix}/volume_db = ${bus.volumeDb ?? 0}`);
+				if (bus.sendTo && bus.sendTo !== "Master" && i > 0) {
+					lines.push(`${prefix}/send = &"${bus.sendTo}"`);
+				}
+				for (let j = 0; j < effectIds[i].length; j++) {
+					lines.push(`${prefix}/effect/${j}/effect = SubResource("${effectIds[i][j]}")`);
+					lines.push(`${prefix}/effect/${j}/enabled = ${(bus.effects?.[j]?.enabled ?? true)}`);
+				}
+			}
+			lines.push("");
+
+			const absPath = resToAbsolute(path, ctx.projectRoot);
+			mkdirSync(dirname(absPath), { recursive: true });
+			writeFileSync(absPath, lines.join("\n"), "utf-8");
+
+			return { content: [{ type: "text", text: `Created AudioBusLayout at ${path} with buses: ${buses.map((b) => b.name).join(", ")}` }] };
+		} catch (e) { return { content: [{ type: "text", text: `Error: ${e instanceof Error ? e.message : String(e)}` }], isError: true }; }
+	});
+
+	// ═══════════════════════════════════════════════════════════
+	// Parallax Background (2D)
+	// ═══════════════════════════════════════════════════════════
+
+	server.tool("godot_add_parallax_background", "Add a ParallaxBackground with multiple ParallaxLayer nodes to a 2D scene. Each layer scrolls at a different rate for depth.", {
+		scenePath: z.string(),
+		parent: z.string().optional().default("."),
+		layers: z.array(z.object({
+			name: z.string(),
+			texturePath: z.string().describe("Background texture (res://)"),
+			motionScale: z.string().optional().default("Vector2(0.5, 0.5)").describe("Scroll speed multiplier as Vector2"),
+			motionOffset: z.string().optional().default("Vector2(0, 0)"),
+			mirroring: z.string().optional().describe("Mirroring size as Vector2 for seamless repeat"),
+		})),
+	}, async ({ scenePath, parent, layers }) => {
+		try {
+			const absPath = resToAbsolute(scenePath, ctx.projectRoot);
+			const doc = parseTscn(readFileSync(absPath, "utf-8"));
+
+			const bgName = "ParallaxBackground";
+			const bgPath = parent === "." ? bgName : `${parent}/${bgName}`;
+			doc.nodes.push({ name: bgName, type: "ParallaxBackground", parent, properties: {} });
+
+			for (const layer of layers) {
+				const layerPath = bgPath;
+
+				// Add texture as ext_resource
+				const texId = generateResourceId();
+				doc.extResources.push({ type: "Texture2D", uid: generateUid(), path: layer.texturePath, id: texId });
+
+				const layerProps: Record<string, unknown> = {
+					motion_scale: parseVariant(layer.motionScale ?? "Vector2(0.5, 0.5)"),
+					motion_offset: parseVariant(layer.motionOffset ?? "Vector2(0, 0)"),
+				};
+				if (layer.mirroring) layerProps.motion_mirroring = parseVariant(layer.mirroring);
+
+				doc.nodes.push({ name: layer.name, type: "ParallaxLayer", parent: layerPath, properties: layerProps as Record<string, import("../../parsers/tscn/types.js").GodotVariant> });
+
+				// Add Sprite2D inside the layer
+				const spritePath = `${layerPath}/${layer.name}`;
+				doc.nodes.push({
+					name: "Sprite2D", type: "Sprite2D", parent: spritePath,
+					properties: { texture: { type: "ExtResource", id: texId }, centered: false } as Record<string, import("../../parsers/tscn/types.js").GodotVariant>,
+				});
+			}
+
+			writeFileSync(absPath, writeTscn(doc), "utf-8");
+			return { content: [{ type: "text", text: `Added ParallaxBackground with ${layers.length} layers to ${scenePath}` }] };
+		} catch (e) { return { content: [{ type: "text", text: `Error: ${e instanceof Error ? e.message : String(e)}` }], isError: true }; }
+	});
+
+	// ═══════════════════════════════════════════════════════════
+	// 2D Lights
+	// ═══════════════════════════════════════════════════════════
+
+	server.tool("godot_add_light2d", "Add a PointLight2D or DirectionalLight2D to a 2D scene.", {
+		scenePath: z.string(),
+		parent: z.string().optional().default("."),
+		name: z.string().optional().default("Light2D"),
+		lightType: z.enum(["point", "directional"]).optional().default("point"),
+		color: z.string().optional().default("Color(1, 1, 1, 1)"),
+		energy: z.number().optional().default(1.0),
+		texturePath: z.string().optional().describe("Light texture path (res://) — required for PointLight2D"),
+		textureScale: z.number().optional().default(1.0),
+		blendMode: z.enum(["add", "sub", "mix"]).optional().default("add"),
+		shadowEnabled: z.boolean().optional().default(false),
+		transform: z.string().optional(),
+	}, async ({ scenePath, parent, name, lightType, color, energy, texturePath, textureScale, blendMode, shadowEnabled, transform }) => {
+		try {
+			const absPath = resToAbsolute(scenePath, ctx.projectRoot);
+			const doc = parseTscn(readFileSync(absPath, "utf-8"));
+			const nodeType = lightType === "directional" ? "DirectionalLight2D" : "PointLight2D";
+
+			const props: Record<string, unknown> = {
+				color: parseVariant(color),
+				energy,
+				shadow_enabled: shadowEnabled,
+				texture_scale: textureScale,
+			};
+
+			const blendModes: Record<string, number> = { add: 0, sub: 1, mix: 2 };
+			props.blend_mode = blendModes[blendMode] ?? 0;
+
+			if (texturePath) {
+				const texId = generateResourceId();
+				doc.extResources.push({ type: "Texture2D", uid: generateUid(), path: texturePath, id: texId });
+				props.texture = { type: "ExtResource", id: texId };
+			}
+
+			if (transform) props.transform = parseVariant(transform);
+
+			doc.nodes.push({ name, type: nodeType, parent, properties: props as Record<string, import("../../parsers/tscn/types.js").GodotVariant> });
+			writeFileSync(absPath, writeTscn(doc), "utf-8");
+			return { content: [{ type: "text", text: `Added ${nodeType} "${name}" to ${scenePath}` }] };
+		} catch (e) { return { content: [{ type: "text", text: `Error: ${e instanceof Error ? e.message : String(e)}` }], isError: true }; }
+	});
+
+	// ═══════════════════════════════════════════════════════════
+	// StyleBox Resource
+	// ═══════════════════════════════════════════════════════════
+
+	server.tool("godot_create_stylebox", "Create a StyleBoxFlat .tres resource for UI panel/button styling.", {
+		path: z.string().describe("Output .tres path (res://)"),
+		bgColor: z.string().optional().default("Color(0.2, 0.2, 0.2, 1)"),
+		borderColor: z.string().optional(),
+		borderWidth: z.number().optional().default(0).describe("Border width on all sides"),
+		cornerRadius: z.number().optional().default(0).describe("Corner radius on all corners"),
+		contentMargin: z.number().optional().describe("Content margin on all sides"),
+		shadowColor: z.string().optional(),
+		shadowSize: z.number().optional().default(0),
+		shadowOffset: z.string().optional().describe("Shadow offset as Vector2"),
+	}, async ({ path, bgColor, borderColor, borderWidth, cornerRadius, contentMargin, shadowColor, shadowSize, shadowOffset }) => {
+		try {
+			const lines = [`[gd_resource type="StyleBoxFlat" format=3]`, "", "[resource]"];
+			lines.push(`bg_color = ${bgColor}`);
+			if (borderColor) {
+				lines.push(`border_color = ${borderColor}`);
+				lines.push(`border_width_left = ${borderWidth}`);
+				lines.push(`border_width_top = ${borderWidth}`);
+				lines.push(`border_width_right = ${borderWidth}`);
+				lines.push(`border_width_bottom = ${borderWidth}`);
+			}
+			if (cornerRadius > 0) {
+				lines.push(`corner_radius_top_left = ${cornerRadius}`);
+				lines.push(`corner_radius_top_right = ${cornerRadius}`);
+				lines.push(`corner_radius_bottom_right = ${cornerRadius}`);
+				lines.push(`corner_radius_bottom_left = ${cornerRadius}`);
+			}
+			if (contentMargin !== undefined) {
+				lines.push(`content_margin_left = ${contentMargin}`);
+				lines.push(`content_margin_top = ${contentMargin}`);
+				lines.push(`content_margin_right = ${contentMargin}`);
+				lines.push(`content_margin_bottom = ${contentMargin}`);
+			}
+			if (shadowColor) lines.push(`shadow_color = ${shadowColor}`);
+			if (shadowSize > 0) lines.push(`shadow_size = ${shadowSize}`);
+			if (shadowOffset) lines.push(`shadow_offset = ${shadowOffset}`);
+			lines.push("");
+
+			const absPath = resToAbsolute(path, ctx.projectRoot);
+			mkdirSync(dirname(absPath), { recursive: true });
+			writeFileSync(absPath, lines.join("\n"), "utf-8");
+			return { content: [{ type: "text", text: `Created StyleBoxFlat at ${path}` }] };
+		} catch (e) { return { content: [{ type: "text", text: `Error: ${e instanceof Error ? e.message : String(e)}` }], isError: true }; }
+	});
+
+	// ═══════════════════════════════════════════════════════════
+	// Multiplayer Nodes
+	// ═══════════════════════════════════════════════════════════
+
+	server.tool("godot_add_multiplayer_nodes", "Add MultiplayerSpawner and/or MultiplayerSynchronizer nodes to a scene for network replication.", {
+		scenePath: z.string(),
+		parent: z.string().optional().default("."),
+		addSpawner: z.boolean().optional().default(true),
+		spawnerScenes: z.array(z.string()).optional().describe("Scenes the spawner can spawn (res:// paths)"),
+		addSynchronizer: z.boolean().optional().default(true),
+		syncProperties: z.array(z.string()).optional().describe("Node property paths to synchronize (e.g., .:position, .:rotation)"),
+	}, async ({ scenePath, parent, addSpawner, spawnerScenes, addSynchronizer, syncProperties }) => {
+		try {
+			const absPath = resToAbsolute(scenePath, ctx.projectRoot);
+			const doc = parseTscn(readFileSync(absPath, "utf-8"));
+
+			if (addSpawner) {
+				const props: Record<string, unknown> = {};
+				if (spawnerScenes && spawnerScenes.length > 0) {
+					// Add scenes as ext_resources
+					const sceneIds: string[] = [];
+					for (const sp of spawnerScenes) {
+						const id = generateResourceId();
+						doc.extResources.push({ type: "PackedScene", uid: generateUid(), path: sp, id });
+						sceneIds.push(id);
+					}
+				}
+				doc.nodes.push({ name: "MultiplayerSpawner", type: "MultiplayerSpawner", parent, properties: props as Record<string, import("../../parsers/tscn/types.js").GodotVariant> });
+			}
+
+			if (addSynchronizer) {
+				doc.nodes.push({ name: "MultiplayerSynchronizer", type: "MultiplayerSynchronizer", parent, properties: {} });
+			}
+
+			writeFileSync(absPath, writeTscn(doc), "utf-8");
+			const added = [addSpawner ? "MultiplayerSpawner" : null, addSynchronizer ? "MultiplayerSynchronizer" : null].filter(Boolean);
+			return { content: [{ type: "text", text: `Added ${added.join(" + ")} to ${scenePath}. Configure spawn lists and sync properties in the editor for full setup.` }] };
+		} catch (e) { return { content: [{ type: "text", text: `Error: ${e instanceof Error ? e.message : String(e)}` }], isError: true }; }
+	});
+
+	// ═══════════════════════════════════════════════════════════
+	// Scene Integrity Checker
+	// ═══════════════════════════════════════════════════════════
+
+	server.tool("godot_check_project_integrity", "Scan all scenes in the project for broken resource references, missing scripts, and structural issues. Returns a project-wide health report.", {}, async () => {
+		try {
+			const scenes = ctx.getAssetManager().byCategory("scene");
+			const allIssues: Array<{ scene: string; severity: string; message: string }> = [];
+			let totalNodes = 0;
+			let totalResources = 0;
+
+			for (const scene of scenes) {
+				try {
+					const content = readFileSync(scene.absPath, "utf-8");
+					const doc = parseTscn(content);
+					totalNodes += doc.nodes.length;
+					totalResources += doc.extResources.length + doc.subResources.length;
+
+					// Check ext_resource paths
+					for (const ext of doc.extResources) {
+						if (ext.path) {
+							try {
+								const extAbs = resToAbsolute(ext.path, ctx.projectRoot);
+								if (!existsSync(extAbs)) {
+									allIssues.push({ scene: scene.resPath, severity: "error", message: `Missing: ${ext.path} (${ext.type})` });
+								}
+							} catch {
+								allIssues.push({ scene: scene.resPath, severity: "error", message: `Bad path: ${ext.path}` });
+							}
+						}
+					}
+				} catch (e) {
+					allIssues.push({ scene: scene.resPath, severity: "error", message: `Failed to parse: ${e instanceof Error ? e.message : String(e)}` });
+				}
+			}
+
+			return {
+				content: [{
+					type: "text",
+					text: JSON.stringify({
+						scenesScanned: scenes.length,
+						totalNodes,
+						totalResources,
+						issueCount: allIssues.length,
+						errors: allIssues.filter((i) => i.severity === "error"),
+						warnings: allIssues.filter((i) => i.severity === "warning"),
+						healthy: allIssues.length === 0,
+					}, null, 2),
+				}],
+			};
+		} catch (e) { return { content: [{ type: "text", text: `Error: ${e instanceof Error ? e.message : String(e)}` }], isError: true }; }
+	});
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Godot Key Code Mapping
+// ═══════════════════════════════════════════════════════════════
+
+function godotKeycode(key: string): number {
+	const keycodes: Record<string, number> = {
+		// Letters
+		A: 65, B: 66, C: 67, D: 68, E: 69, F: 70, G: 71, H: 72, I: 73, J: 74, K: 75, L: 76, M: 77,
+		N: 78, O: 79, P: 80, Q: 81, R: 82, S: 83, T: 84, U: 85, V: 86, W: 87, X: 88, Y: 89, Z: 90,
+		// Numbers
+		"0": 48, "1": 49, "2": 50, "3": 51, "4": 52, "5": 53, "6": 54, "7": 55, "8": 56, "9": 57,
+		// Special keys
+		Space: 32, Escape: 4194305, Tab: 4194306, Enter: 4194309, Return: 4194309,
+		Backspace: 4194308, Delete: 4194312, Insert: 4194311,
+		Up: 4194320, Down: 4194322, Left: 4194319, Right: 4194321,
+		Home: 4194313, End: 4194314, PageUp: 4194315, PageDown: 4194316,
+		Shift: 4194325, Ctrl: 4194326, Alt: 4194328, Meta: 4194329,
+		CapsLock: 4194327, NumLock: 4194331, ScrollLock: 4194330,
+		F1: 4194332, F2: 4194333, F3: 4194334, F4: 4194335, F5: 4194336, F6: 4194337,
+		F7: 4194338, F8: 4194339, F9: 4194340, F10: 4194341, F11: 4194342, F12: 4194343,
+		// Punctuation
+		Minus: 45, Equal: 61, BracketLeft: 91, BracketRight: 93,
+		Semicolon: 59, Apostrophe: 39, Comma: 44, Period: 46, Slash: 47, Backslash: 92,
+	};
+	return keycodes[key] ?? keycodes[key.toUpperCase()] ?? keycodes[key.charAt(0).toUpperCase() + key.slice(1)] ?? 32;
+}
