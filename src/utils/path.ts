@@ -80,6 +80,14 @@ export function safeResolvePath(resPath: string, projectRoot: string): string {
 }
 
 /**
+ * Escape a string for safe use in RegExp constructors.
+ * Prevents ReDoS attacks from user-supplied strings.
+ */
+export function escapeRegex(s: string): string {
+	return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
  * Generate a unique resource ID in Godot's format.
  * Format: alphanumeric string, typically 5 chars with a number prefix.
  */

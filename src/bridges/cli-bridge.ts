@@ -12,6 +12,8 @@ import { writeFileSync, unlinkSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 
+const MAX_OUTPUT_SIZE = 10 * 1024 * 1024; // 10MB cap on stdout/stderr buffering
+
 export interface CliResult {
 	exitCode: number | null;
 	stdout: string;
@@ -60,11 +62,11 @@ export class CliBridge {
 			});
 
 			proc.stdout?.on("data", (data: Buffer) => {
-				stdout += data.toString();
+				if (stdout.length < MAX_OUTPUT_SIZE) stdout += data.toString();
 			});
 
 			proc.stderr?.on("data", (data: Buffer) => {
-				stderr += data.toString();
+				if (stderr.length < MAX_OUTPUT_SIZE) stderr += data.toString();
 			});
 
 			const timer = setTimeout(() => {

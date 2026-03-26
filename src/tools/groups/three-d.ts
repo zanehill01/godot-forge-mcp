@@ -11,7 +11,7 @@ import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { parseTscn } from "../../parsers/tscn/parser.js";
 import { writeTscn } from "../../parsers/tscn/writer.js";
-import { resToAbsolute, generateResourceId } from "../../utils/path.js";
+import { resToAbsolute, generateResourceId, escapeRegex } from "../../utils/path.js";
 import { generateUid } from "../../utils/uid.js";
 import { parseVariant } from "../../utils/variant.js";
 import type { ToolContext } from "../registry.js";
@@ -955,7 +955,7 @@ export function registerThreeDTools(server: McpServer, ctx: ToolContext): void {
 						const importPath = resToAbsolute(assetPath + ".import", ctx.projectRoot);
 						let content = readFileSync(importPath, "utf-8");
 						for (const [k, v] of Object.entries(settings)) {
-							const regex = new RegExp(`^${k.replace("/", "\\/")}=.*$`, "m");
+							const regex = new RegExp(`^${escapeRegex(k)}=.*$`, "m");
 							if (regex.test(content)) content = content.replace(regex, `${k}=${v}`);
 							else content += `${k}=${v}\n`;
 						}

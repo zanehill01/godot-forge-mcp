@@ -84,15 +84,17 @@ function findGodotBinary(): string | null {
 		}
 	}
 
-	// Try to find in PATH via `which` or `where`
+	// Try to find in PATH via `which` or `where` — use spawnSync to prevent command injection
 	try {
-		const { execSync } = require("node:child_process");
+		const { spawnSync } = require("node:child_process");
 		const cmd = process.platform === "win32" ? "where" : "which";
 		for (const name of names) {
 			try {
-				const result = execSync(`${cmd} ${name}`, { encoding: "utf8", stdio: "pipe" });
-				const firstLine = result.trim().split("\n")[0];
-				if (firstLine) return firstLine;
+				const result = spawnSync(cmd, [name], { encoding: "utf8", stdio: "pipe" });
+				if (result.status === 0 && result.stdout) {
+					const firstLine = result.stdout.trim().split("\n")[0];
+					if (firstLine) return firstLine;
+				}
 			} catch {
 				// not found, try next
 			}

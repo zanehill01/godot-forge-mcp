@@ -6,6 +6,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
+import { escapeRegex } from "../../utils/path.js";
 import { mkdirSync } from "node:fs";
 import { resToAbsolute } from "../../utils/path.js";
 import { analyzeShader } from "../../parsers/gdshader/parser.js";
@@ -145,13 +146,13 @@ export function registerShaderTools(server: McpServer, ctx: ToolContext): void {
 							}
 							case "modify_uniform": {
 								if (!name || !code) return { content: [{ type: "text" as const, text: "name and code required" }], isError: true };
-								const regex = new RegExp(`^uniform\\s+\\w+\\s+${name}\\b[^;]*;`, "m");
+								const regex = new RegExp(`^uniform\\s+\\w+\\s+${escapeRegex(name)}\\b[^;]*;`, "m");
 								content = content.replace(regex, code);
 								break;
 							}
 							case "replace_function": {
 								if (!name || !code) return { content: [{ type: "text" as const, text: "name and code required" }], isError: true };
-								const funcRegex = new RegExp(`(\\w+\\s+${name}\\s*\\([^)]*\\)\\s*\\{)[^}]*(\\})`, "s");
+								const funcRegex = new RegExp(`(\\w+\\s+${escapeRegex(name)}\\s*\\([^)]*\\)\\s*\\{)[^}]*(\\})`, "s");
 								content = content.replace(funcRegex, `$1\n${code}\n$2`);
 								break;
 							}
@@ -229,7 +230,7 @@ export function registerShaderTools(server: McpServer, ctx: ToolContext): void {
 						const absPath = resToAbsolute(materialPath, ctx.projectRoot);
 						let content = readFileSync(absPath, "utf-8");
 						const key = `shader_parameter/${param}`;
-						const regex = new RegExp(`^${key.replace("/", "\\/")}\\s*=.*$`, "m");
+						const regex = new RegExp(`^${escapeRegex(key)}\\s*=.*$`, "m");
 						if (regex.test(content)) {
 							content = content.replace(regex, `${key} = ${value}`);
 						} else {

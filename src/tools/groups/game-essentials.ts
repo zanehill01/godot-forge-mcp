@@ -14,7 +14,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { parseTscn } from "../../parsers/tscn/parser.js";
 import { writeTscn } from "../../parsers/tscn/writer.js";
-import { resToAbsolute, generateResourceId } from "../../utils/path.js";
+import { resToAbsolute, generateResourceId, escapeRegex } from "../../utils/path.js";
 import { generateUid } from "../../utils/uid.js";
 import { parseVariant } from "../../utils/variant.js";
 import type { ToolContext } from "../registry.js";
@@ -303,7 +303,7 @@ export function registerGameEssentialsTools(server: McpServer, ctx: ToolContext)
 							content = content.trimEnd() + "\n\n[input]\n\n";
 						}
 
-						const actionRegex = new RegExp(`^${action}=.*$`, "m");
+						const actionRegex = new RegExp(`^${escapeRegex(action)}=.*$`, "m");
 						if (actionRegex.test(content)) {
 							content = content.replace(actionRegex, `${action}=${actionValue}`);
 						} else {

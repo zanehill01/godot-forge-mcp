@@ -4,6 +4,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { readFileSync } from "node:fs";
+import { escapeRegex } from "../../utils/path.js";
 import type { ToolContext } from "../registry.js";
 
 export function registerRefactorTools(server: McpServer, ctx: ToolContext): void {
@@ -49,20 +50,20 @@ export function registerRefactorTools(server: McpServer, ctx: ToolContext): void
 						const textFiles = assets.filter((a) => [".gd", ".cs", ".tscn", ".tres", ".cfg"].includes(a.ext));
 						const changes: Array<{ path: string; line: number; before: string; after: string }> = [];
 						const patterns: RegExp[] = [];
-						if (type === "class_name" || type === "any") patterns.push(new RegExp(`\\b${p.oldName}\\b`, "g"));
-						else if (type === "method") patterns.push(new RegExp(`\\b${p.oldName}\\s*\\(`, "g"), new RegExp(`\\.${p.oldName}\\b`, "g"));
-						else if (type === "signal") patterns.push(new RegExp(`signal\\s+${p.oldName}\\b`, "g"), new RegExp(`\\.${p.oldName}\\.(?:connect|emit|disconnect)`, "g"));
-						else patterns.push(new RegExp(`\\b${p.oldName}\\b`, "g"));
+						if (type === "class_name" || type === "any") patterns.push(new RegExp(`\\b${escapeRegex(p.oldName)}\\b`, "g"));
+						else if (type === "method") patterns.push(new RegExp(`\\b${escapeRegex(p.oldName)}\\s*\\(`, "g"), new RegExp(`\\.${escapeRegex(p.oldName)}\\b`, "g"));
+						else if (type === "signal") patterns.push(new RegExp(`signal\\s+${escapeRegex(p.oldName)}\\b`, "g"), new RegExp(`\\.${escapeRegex(p.oldName)}\\.(?:connect|emit|disconnect)`, "g"));
+						else patterns.push(new RegExp(`\\b${escapeRegex(p.oldName)}\\b`, "g"));
 						for (const f of textFiles) {
 							try {
 								const lines = readFileSync(f.absPath, "utf-8").split("\n");
-								for (let i = 0; i < lines.length; i++) { for (const pat of patterns) { pat.lastIndex = 0; if (pat.test(lines[i])) changes.push({ path: f.resPath, line: i + 1, before: lines[i].trim(), after: lines[i].replace(new RegExp(`\\b${p.oldName}\\b`, "g"), p.newName).trim() }); } }
+								for (let i = 0; i < lines.length; i++) { for (const pat of patterns) { pat.lastIndex = 0; if (pat.test(lines[i])) changes.push({ path: f.resPath, line: i + 1, before: lines[i].trim(), after: lines[i].replace(new RegExp(`\\b${escapeRegex(p.oldName)}\\b`, "g"), p.newName).trim() }); } }
 							} catch { /* skip */ }
 						}
 						if (!dryRun && changes.length > 0) {
 							const { writeFileSync: wf } = await import("node:fs");
 							const processed = new Set<string>();
-							for (const c of changes) { if (processed.has(c.path)) continue; processed.add(c.path); const abs = ctx.getAssetManager().findByResPath(c.path)?.absPath; if (!abs) continue; wf(abs, readFileSync(abs, "utf-8").replace(new RegExp(`\\b${p.oldName}\\b`, "g"), p.newName), "utf-8"); }
+							for (const c of changes) { if (processed.has(c.path)) continue; processed.add(c.path); const abs = ctx.getAssetManager().findByResPath(c.path)?.absPath; if (!abs) continue; wf(abs, readFileSync(abs, "utf-8").replace(new RegExp(`\\b${escapeRegex(p.oldName)}\\b`, "g"), p.newName), "utf-8"); }
 						}
 						return { content: [{ type: "text", text: JSON.stringify({ dryRun, changeCount: changes.length, filesAffected: new Set(changes.map((c) => c.path)).size, changes: changes.slice(0, 50) }, null, 2) }] };
 					}

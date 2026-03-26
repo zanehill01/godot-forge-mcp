@@ -10,6 +10,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { writeFileSync, unlinkSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
+import { resToAbsolute } from "../../utils/path.js";
 import type { ToolContext } from "../registry.js";
 
 let runningProcess: ChildProcess | null = null;
@@ -35,7 +36,11 @@ export function registerExecutionTools(server: McpServer, ctx: ToolContext): voi
 					}
 					if (runningProcess) { runningProcess.kill(); runningProcess = null; }
 					const args = ["--path", ctx.projectRoot];
-					if (scene) args.push(scene);
+					if (scene) {
+						// Validate the scene path stays within project root
+						resToAbsolute(scene, ctx.projectRoot);
+						args.push(scene);
+					}
 					return new Promise((resolve) => {
 						let stdout = "", stderr = "";
 						const proc = spawn(ctx.godotBinary!, args, { cwd: ctx.projectRoot, stdio: "pipe" });
