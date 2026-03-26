@@ -1,6 +1,6 @@
 # Godot Forge MCP
 
-Intelligent MCP server for Godot 4.3+ game development. 97 tools, progressive discovery, editor plugin.
+Intelligent MCP server for Godot 4.3+ game development. 17 smart tools covering 115 actions, 5 bridges, LSP + DAP integration.
 
 Not a tool collection — a game development partner.
 
@@ -20,48 +20,56 @@ npx godot-forge-mcp --project /path/to/your/godot/project
 Claude / AI Client
         │ MCP Protocol (stdio)
         ▼
-godot-forge-mcp (TypeScript sidecar)
-  ┌─────────────┐ ┌──────────────┐ ┌───────────────┐
-  │ File Engine  │ │  CLI Bridge  │ │ Socket Bridge │
-  │ .tscn/.gd    │ │  headless    │ │  live editor  │
-  │ parse/write  │ │  invocation  │ │  WebSocket    │
-  └─────────────┘ └──────────────┘ └───────────────┘
-        │                │                │
-        ▼                ▼                ▼
-  Project files    Godot 4.3+ CLI   Editor Plugin
+godot-forge-mcp v0.3.0 (TypeScript)
+  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐
+  │   File   │ │   CLI    │ │  Socket  │ │   LSP    │ │   DAP    │
+  │  Engine  │ │  Bridge  │ │  Bridge  │ │  Client  │ │  Client  │
+  │ .tscn/.gd│ │ headless │ │ WebSocket│ │ GDScript │ │ debugger │
+  │parse/wrt │ │ Godot    │ │ editor   │ │ lang srv │ │ adapter  │
+  └──────────┘ └──────────┘ └──────────┘ └──────────┘ └──────────┘
+       │            │            │            │            │
+       ▼            ▼            ▼            ▼            ▼
+  Project      Godot 4.3+   Editor      LSP :6005     DAP :6006
+  files        CLI           Plugin
 ```
 
-**Three-layer graceful degradation:**
-- **File Engine** — Always works. Parses/writes .tscn, .tres, .gd, .gdshader directly.
+**Five-layer graceful degradation:**
+- **File Engine** — Always works. Parses/writes .tscn, .tres, .gd, .gdshader, .gdextension directly.
 - **CLI Bridge** — Works when Godot binary is available. Headless validation, export, script execution.
 - **Socket Bridge** — Works when editor plugin is active. Real-time inspection, undo/redo, screenshots.
+- **LSP Client** — Works when Godot editor is running. GDScript diagnostics, completions, hover, go-to-definition.
+- **DAP Client** — Works when debugging. Breakpoints, stepping, stack traces, variable inspection, expression evaluation.
 
-## Tools (97 total)
+## Tools (17 tools, 115 actions)
 
-### Always Available (21 core tools)
+Each tool covers a domain and accepts an `action` parameter. The LLM picks the domain, then specifies the action — dramatically reducing context window overhead vs. individual tools.
 
-| Category | Tools |
-|----------|-------|
-| **Discovery** | `godot_project_info`, `godot_list_scenes`, `godot_list_scripts`, `godot_list_resources`, `godot_list_assets`, `godot_search`, `godot_catalog` |
-| **Scene Ops** | `godot_read_scene`, `godot_create_scene`, `godot_add_node`, `godot_modify_node`, `godot_remove_node`, `godot_connect_signal`, `godot_disconnect_signal`, `godot_instance_scene` |
-| **Script Ops** | `godot_read_script`, `godot_write_script`, `godot_edit_script` |
-| **Execution** | `godot_run_project`, `godot_stop_project`, `godot_run_script` |
+### Core (always available)
 
-### On-Demand Groups (76 tools via `godot_catalog`)
+| Tool | Actions | What It Does |
+|------|---------|-------------|
+| `godot_discover` | 7 | Project info, list scenes/scripts/resources/assets, full-text search, catalog |
+| `godot_scene` | 8 | Read/create scenes, add/modify/remove nodes, signals, scene instancing |
+| `godot_script` | 3 | Read/write/analyze GDScript (extracts signals, exports, methods, enums, annotations) |
+| `godot_execute` | 3 | Run project, stop project, execute GDScript headlessly |
 
-| Group | Tools | What It Does |
-|-------|-------|-------------|
-| `shader` | 8 | Create, edit, validate .gdshader. 8 templates (water, dissolve, outline, toon, hologram, pixelation, wind, glow). ShaderMaterial management. |
-| `animation` | 10 | Animations, AnimationTree state machines, blend trees, transitions, tween builder, spritesheet animation. |
-| `physics` | 8 | Collision shapes, bodies, areas, raycasts, joints, navigation, physics materials, layers. |
-| `ui` | 8 | Control layouts, themes, containers, anchors, RichTextLabel BBCode, popups, gamepad focus chains. |
-| `audio` | 5 | Stream players, bus layout, effects, audio pools, spatial 3D audio. |
-| `tilemap` | 6 | Tilesets, tile config, painting, autotile, layers, procedural generation. |
-| `three_d` | 7 | Procedural meshes, materials, environment/sky, camera rigs, lights, LOD, import config. |
-| `ai_behavior` | 6 | State machines, behavior trees, dialogue trees, pathfinding, steering behaviors, spawn systems. |
-| `debug` | 7 | Screenshots, runtime inspection, performance metrics, input injection. (Requires editor plugin) |
-| `project_mgmt` | 6 | Input map, autoloads, export presets, settings, groups, class reference. |
-| `refactor` | 5 | Find unused, rename symbols, extract/inline scenes, dependency graph. |
+### On-Demand Groups (activate via `godot_discover(action: "catalog", activate: "group_name")`)
+
+| Tool | Group Name | Actions | What It Does |
+|------|-----------|---------|-------------|
+| `godot_3d` | `three_d` | 16 | Meshes, models (.glb), materials, environment (sky/fog/tonemap/SSAO/glow), particles (8 presets), lights, cameras, GI probes, fog volumes, decals, Path3D, GridMap, MultiMesh, composite bodies, occluders, import config |
+| `godot_shader` | `shader` | 8 | Create/read/edit .gdshader, ShaderMaterial, shader params, validation, 8 templates (water, dissolve, outline, toon, hologram, pixelation, wind, glow) |
+| `godot_physics` | `physics` | 8 | Collision shapes, physics bodies, areas, raycasts, joints, navigation, physics materials, layer management |
+| `godot_game` | `game_essentials` | 12 | SpriteFrames, input binding (keys/gamepad/mouse), Camera2D, scene validation, Curve, Gradient, AudioBusLayout, parallax backgrounds, 2D lights, StyleBox, multiplayer nodes, project integrity checker |
+| `godot_intelligence` | `intelligence` | 10 | LSP: connect, diagnostics, symbols, completions, hover, definition. DAP: connect, breakpoints, stepping, variable/stack inspection |
+| `godot_standards` | `godot_standards` | 14 | UID management, export presets, CI/CD generation, GDExtension, plugin scaffolding, project linting, test frameworks (GUT/GdUnit4), .gitignore/.gitattributes, resource analysis |
+| `godot_debug` | `debug` | 7 | Screenshots, performance metrics, scene tree, node properties, input injection, editor state (requires editor plugin) |
+| `godot_ui` | `ui` | 5 | Control layouts, themes, anchor presets, popup dialogs, focus chains |
+| `godot_animation` | `animation` | 4 | Create Animation .tres, AnimationTree, list/inspect animations |
+| `godot_project` | `project_mgmt` | 5 | Input map, autoloads, project settings, node groups, class reference |
+| `godot_refactor` | `refactor` | 3 | Find unused assets, rename symbols across files, dependency graph |
+| `godot_audio` | `audio` | 2 | AudioStreamPlayer nodes (2D/3D), spatial audio |
+| `godot_tilemap` | `tilemap` | 2 | TileMapLayer nodes (4.3+ API), tile painting |
 
 ### Guided Workflows (8 prompts)
 
@@ -107,7 +115,7 @@ GODOT_FORGE_PORT=6100
 
 ## Resources
 
-The server exposes MCP Resources for read-only data access:
+MCP Resources for read-only data access:
 
 | URI | Description |
 |-----|-------------|
@@ -122,9 +130,13 @@ The server exposes MCP Resources for read-only data access:
 - TypeScript + `@modelcontextprotocol/sdk`
 - Custom TSCN/TRES parser with round-trip fidelity
 - Godot Variant type serializer (19 types)
-- GDScript analyzer (class info, signals, exports, methods)
+- GDScript analyzer (class info, signals, exports, methods, enums, annotations, static vars, RPC)
 - GDShader parser + 8 production shader templates
+- 8 parsers: TSCN, project.godot, GDShader, .import, .gdextension, export_presets.cfg, plugin.cfg, .uid
+- LSP client (JSON-RPC/TCP) for GDScript language server
+- DAP client (DAP/TCP) for Godot debug adapter
 - WebSocket bridge for editor plugin communication
+- 139 tests across 16 test files
 
 ## License
 
