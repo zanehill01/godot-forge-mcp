@@ -1,7 +1,14 @@
 /**
  * Configuration for the Godot Forge MCP server.
+ *
+ * Includes platform-aware auto-detection of the Godot binary
+ * across standard install locations, Steam, Scoop, Homebrew, Flatpak, and Snap.
  */
 
+import { existsSync } from "node:fs";
+import { readdirSync } from "node:fs";
+import { join } from "node:path";
+import { spawnSync } from "node:child_process";
 import { findProjectRoot } from "./utils/path.js";
 
 export interface ForgeConfig {
@@ -33,9 +40,15 @@ export function resolveConfig(args: string[]): ForgeConfig {
 		);
 	}
 
-	// Godot binary: --godot flag > GODOT_BINARY env > search PATH
+	// Godot binary: --godot flag > GODOT_BINARY env > auto-detect
 	const godotBinary =
 		getArgValue(args, "--godot") ?? process.env.GODOT_BINARY ?? findGodotBinary();
+
+	if (godotBinary) {
+		console.error(`[godot-forge] Godot binary: ${godotBinary}`);
+	} else {
+		console.error("[godot-forge] Godot binary not found — CLI bridge disabled. Set --godot or install Godot to PATH.");
+	}
 
 	// Plugin port: --port flag > GODOT_FORGE_PORT env > default 6100
 	const rawPort = getArgValue(args, "--port") ?? process.env.GODOT_FORGE_PORT ?? "6100";
@@ -62,45 +75,116 @@ function getArgValue(args: string[], flag: string): string | null {
 	return null;
 }
 
+/**
+ * Auto-detect the Godot binary across platforms.
+ *
+ * Search order:
+ * 1. Platform-specific common install locations
+ * 2. PATH lookup via `which`/`where`
+ * 3. Steam install directories
+ */
 function findGodotBinary(): string | null {
-	// Common Godot binary names across platforms
-	const names = ["godot", "godot4", "Godot_v4"];
+	// Platform-specific install directories
+	const candidates: string[] = [];
 
-	// On Windows, also check common install locations
 	if (process.platform === "win32") {
-		const commonPaths = [
-			"C:/Program Files/Godot/Godot.exe",
-			"C:/Program Files (x86)/Godot/Godot.exe",
-			`${process.env.LOCALAPPDATA}/Godot/Godot.exe`,
-			`${process.env.SCOOP}/apps/godot/current/Godot.exe`,
-		];
-		for (const p of commonPaths) {
+		const home = process.env.USERPROFILE ?? "C:/Users/Default";
+		const localAppData = process.env.LOCALAPPDATA ?? join(home, "AppData/Local");
+		const programFiles = process.env.ProgramFiles ?? "C:/Program Files";
+		const programFilesX86 = process.env["ProgramFiles(x86)"] ?? "C:/Program Files (x86)";
+		const scoop = process.env.SCOOP ?? join(home, "scoop");
+
+		candidates.push(
+			// Standard install locations
+			join(programFiles, "Godot/Godot.exe"),
+			join(programFilesX86, "Godot/Godot.exe"),
+			join(localAppData, "Godot/Godot.exe"),
+			// Scoop package manager
+			join(scoop, "apps/godot/current/Godot.exe"),
+			join(scoop, "apps/godot-mono/current/Godot.exe"),
+			// Steam (Windows)
+			join(programFilesX86, "Steam/steamapps/common/Godot Engine/Godot_v4.exe"),
+			join(programFiles, "Steam/steamapps/common/Godot Engine/Godot_v4.exe"),
+			// Winget / Microsoft Store
+			join(localAppData, "Programs/Godot/Godot.exe"),
+		);
+
+		// Scan common user directories for Godot executables (e.g., downloaded to Desktop)
+		for (const dir of [join(home, "Desktop"), join(home, "Downloads"), localAppData]) {
 			try {
-				const { existsSync } = require("node:fs");
-				if (existsSync(p)) return p;
-			} catch {
-				// skip
-			}
+				if (existsSync(dir)) {
+					for (const f of readdirSync(dir)) {
+						if (/^Godot_v4[^/]*\.exe$/i.test(f) && !f.includes("console")) {
+							candidates.push(join(dir, f));
+						}
+					}
+				}
+			} catch { /* skip unreadable dirs */ }
+		}
+	} else if (process.platform === "darwin") {
+		candidates.push(
+			// Homebrew
+			"/opt/homebrew/bin/godot",
+			"/usr/local/bin/godot",
+			// Application bundle
+			"/Applications/Godot.app/Contents/MacOS/Godot",
+			"/Applications/Godot_mono.app/Contents/MacOS/Godot",
+			// Steam (macOS)
+			join(process.env.HOME ?? "~", "Library/Application Support/Steam/steamapps/common/Godot Engine/Godot.app/Contents/MacOS/Godot"),
+		);
+	} else {
+		// Linux
+		const home = process.env.HOME ?? "~";
+		candidates.push(
+			"/usr/bin/godot",
+			"/usr/bin/godot4",
+			"/usr/local/bin/godot",
+			"/usr/local/bin/godot4",
+			// Flatpak
+			"/var/lib/flatpak/exports/bin/org.godotengine.Godot",
+			join(home, ".local/share/flatpak/exports/bin/org.godotengine.Godot"),
+			// Snap
+			"/snap/bin/godot-engine",
+			"/snap/bin/godot",
+			// Steam (Linux)
+			join(home, ".steam/steam/steamapps/common/Godot Engine/godot.x86_64"),
+			join(home, ".local/share/Steam/steamapps/common/Godot Engine/godot.x86_64"),
+			// AppImage in common locations
+			join(home, "Applications/Godot.AppImage"),
+		);
+
+		// Scan ~/Downloads and ~/Desktop for Godot AppImages / binaries
+		for (const dir of [join(home, "Downloads"), join(home, "Desktop")]) {
+			try {
+				if (existsSync(dir)) {
+					for (const f of readdirSync(dir)) {
+						if (/^Godot_v4.*\.(x86_64|AppImage)$/i.test(f)) {
+							candidates.push(join(dir, f));
+						}
+					}
+				}
+			} catch { /* skip */ }
 		}
 	}
 
-	// Try to find in PATH via `which` or `where` — use spawnSync to prevent command injection
-	try {
-		const { spawnSync } = require("node:child_process");
-		const cmd = process.platform === "win32" ? "where" : "which";
-		for (const name of names) {
-			try {
-				const result = spawnSync(cmd, [name], { encoding: "utf8", stdio: "pipe" });
-				if (result.status === 0 && result.stdout) {
-					const firstLine = result.stdout.trim().split("\n")[0];
-					if (firstLine) return firstLine;
-				}
-			} catch {
-				// not found, try next
+	// Check each candidate
+	for (const p of candidates) {
+		try {
+			if (existsSync(p)) return p;
+		} catch { /* skip */ }
+	}
+
+	// Fall back to PATH lookup
+	const names = ["godot", "godot4", "Godot_v4"];
+	const cmd = process.platform === "win32" ? "where" : "which";
+	for (const name of names) {
+		try {
+			const result = spawnSync(cmd, [name], { encoding: "utf8", stdio: "pipe" });
+			if (result.status === 0 && result.stdout) {
+				const firstLine = result.stdout.trim().split("\n")[0];
+				if (firstLine) return firstLine;
 			}
-		}
-	} catch {
-		// skip
+		} catch { /* not found */ }
 	}
 
 	return null;

@@ -179,4 +179,12 @@ function registerToolGroups(): void {
 		requiresPlugin: false,
 		register: (s, c) => { import("./tools/groups/roguelike.js").then((m) => m.registerRoguelikeTools(s, c)); },
 	});
+
+	registerGroup({
+		name: "assets",
+		description: "godot_assets: CC0 asset library — search/download HDRIs, PBR textures, 3D models from Poly Haven, browse Kenney game asset packs",
+		toolCount: 1,
+		requiresPlugin: false,
+		register: (s, c) => { import("./tools/groups/assets.js").then((m) => m.registerAssetTools(s, c)); },
+	});
 }
