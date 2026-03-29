@@ -1,6 +1,6 @@
 # Godot Forge MCP
 
-Intelligent MCP server for Godot 4.3+ game development. 17 smart tools covering 115 actions, 5 bridges, LSP + DAP integration.
+Intelligent MCP server for Godot 4.x game development. 19 smart tools covering 120+ actions, 5 bridges, LSP + DAP integration, and built-in roguelike systems scaffolding.
 
 Not a tool collection — a game development partner.
 
@@ -9,6 +9,9 @@ Not a tool collection — a game development partner.
 ```bash
 # With Claude Code
 claude mcp add godot-forge -- npx godot-forge-mcp --project /path/to/your/godot/project
+
+# With Godot binary for CLI bridge (headless execution, validation)
+claude mcp add godot-forge -- npx godot-forge-mcp --project /path/to/project --godot /path/to/godot
 
 # Or run directly
 npx godot-forge-mcp --project /path/to/your/godot/project
@@ -20,7 +23,7 @@ npx godot-forge-mcp --project /path/to/your/godot/project
 Claude / AI Client
         │ MCP Protocol (stdio)
         ▼
-godot-forge-mcp v0.3.0 (TypeScript)
+godot-forge-mcp v0.4.0 (TypeScript)
   ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐
   │   File   │ │   CLI    │ │  Socket  │ │   LSP    │ │   DAP    │
   │  Engine  │ │  Bridge  │ │  Bridge  │ │  Client  │ │  Client  │
@@ -29,7 +32,7 @@ godot-forge-mcp v0.3.0 (TypeScript)
   └──────────┘ └──────────┘ └──────────┘ └──────────┘ └──────────┘
        │            │            │            │            │
        ▼            ▼            ▼            ▼            ▼
-  Project      Godot 4.3+   Editor      LSP :6005     DAP :6006
+  Project      Godot 4.x    Editor      LSP :6005     DAP :6006
   files        CLI           Plugin
 ```
 
@@ -40,7 +43,7 @@ godot-forge-mcp v0.3.0 (TypeScript)
 - **LSP Client** — Works when Godot editor is running. GDScript diagnostics, completions, hover, go-to-definition.
 - **DAP Client** — Works when debugging. Breakpoints, stepping, stack traces, variable inspection, expression evaluation.
 
-## Tools (17 tools, 115 actions)
+## Tools (19 tools, 120+ actions)
 
 Each tool covers a domain and accepts an `action` parameter. The LLM picks the domain, then specifies the action — dramatically reducing context window overhead vs. individual tools.
 
@@ -64,12 +67,42 @@ Each tool covers a domain and accepts an `action` parameter. The LLM picks the d
 | `godot_intelligence` | `intelligence` | 10 | LSP: connect, diagnostics, symbols, completions, hover, definition. DAP: connect, breakpoints, stepping, variable/stack inspection |
 | `godot_standards` | `godot_standards` | 14 | UID management, export presets, CI/CD generation, GDExtension, plugin scaffolding, project linting, test frameworks (GUT/GdUnit4), .gitignore/.gitattributes, resource analysis |
 | `godot_debug` | `debug` | 7 | Screenshots, performance metrics, scene tree, node properties, input injection, editor state (requires editor plugin) |
+| `godot_animation` | `animation` | 8 | Create Animation .tres, AnimationTree, list/inspect animations, add state machine states, add transitions, blend spaces (1D/2D), tween chain generation |
+| `godot_audio` | `audio` | 5 | AudioStreamPlayer nodes (2D/3D), spatial audio, AudioBusLayout resources, runtime audio effects, audio pools with randomized pitch/volume |
 | `godot_ui` | `ui` | 5 | Control layouts, themes, anchor presets, popup dialogs, focus chains |
-| `godot_animation` | `animation` | 4 | Create Animation .tres, AnimationTree, list/inspect animations |
+| `godot_ai` | `ai_behavior` | 7 | State machines, behavior trees, dialogue trees, pathfinding (2D/3D), steering behaviors, spawn systems (wave/pool/random), **Director system** (RoR2-style time-based difficulty + spawn budgeting) |
+| `godot_roguelike` | `roguelike` | 7 | Item resources (rarity/stacking/proc coefficient), loot tables (weighted random), inventory component, proc chain manager (on-hit/on-kill/on-crit with depth limiting), reusable components (health/hitbox/hurtbox/status effect/knockback), global event bus, stage chunk templates with spawn markers |
 | `godot_project` | `project_mgmt` | 5 | Input map, autoloads, project settings, node groups, class reference |
 | `godot_refactor` | `refactor` | 3 | Find unused assets, rename symbols across files, dependency graph |
-| `godot_audio` | `audio` | 2 | AudioStreamPlayer nodes (2D/3D), spatial audio |
 | `godot_tilemap` | `tilemap` | 2 | TileMapLayer nodes (4.3+ API), tile painting |
+
+### Roguelike Systems (godot_roguelike)
+
+Purpose-built for 3D roguelike development (Risk of Rain 2-style games):
+
+| Action | What It Generates |
+|--------|-------------------|
+| `item_resource` | `ItemData` Resource class — rarity tiers (Common → Void), stacking, proc coefficients, item tags, economy |
+| `loot_table` | `LootTable` Resource — weighted random rolls, unique rolls, filter by rarity/tag + `LootEntry` resource |
+| `inventory` | `Inventory` component — item stacking, slot limits, add/remove/query, full signal coverage |
+| `proc_chain` | `ProcChainManager` — on-hit/on-kill/on-crit/on-damaged event system with `DamageInfo`, proc depth limiting (max 5), crit processing, diminishing chain coefficients |
+| `component` | 5 reusable components: **HealthComponent** (HP/shield/barrier/armor with regen), **HitboxComponent** (Area3D with team filtering), **HurtboxComponent** (receives hits, forwards to health), **StatusEffectManager** (buff/debuff stacking, tick damage, stun/slow), **KnockbackComponent** (impulse with decay) |
+| `event_bus` | Global signal bus autoload — 12 roguelike signals (enemy_killed, item_picked_up, damage_dealt, difficulty_changed, etc.) |
+| `stage_chunk` | Stage chunk .tscn + script — typed spawn markers (enemy/chest/shrine), cardinal connection points for procedural assembly, NavigationRegion3D |
+
+### AI & Behavior (godot_ai)
+
+All actions default to 3D (CharacterBody3D, Vector3, Node3D). Set `is3d: false` for 2D variants.
+
+| Action | What It Generates |
+|--------|-------------------|
+| `state_machine` | Finite state machine GDScript with enum states, enter/exit callbacks, change_state() |
+| `behavior_tree` | Behavior tree skeleton — BTSelector, BTSequence, BTAction, BTCondition nodes |
+| `dialogue` | Branching dialogue data (JSON) + DialogueReader script with signals |
+| `pathfinding` | NavigationAgent3D/2D setup with velocity-based following |
+| `steering` | Steering behaviors: seek, flee, arrive, pursue, evade, wander, flock |
+| `spawn` | Spawner patterns: wave (sequential), pool (object pooling), random (timer-based) |
+| `director` | **RoR2-style Director** — time-based difficulty coefficient, credit budget accumulation, weighted enemy spawning from cost-gated pool, difficulty labels (Easy → HAHAHAHA) |
 
 ### Guided Workflows (8 prompts)
 
@@ -102,12 +135,12 @@ The plugin enables:
 
 ```bash
 # CLI flags
-npx godot-forge-mcp --project /path/to/project  # Project root
-npx godot-forge-mcp --godot /path/to/godot       # Godot binary
+npx godot-forge-mcp --project /path/to/project  # Project root (required)
+npx godot-forge-mcp --godot /path/to/godot       # Godot binary (enables CLI bridge)
 npx godot-forge-mcp --port 6100                   # Plugin WebSocket port
 npx godot-forge-mcp --no-connect                  # Skip plugin auto-connection
 
-# Environment variables
+# Environment variables (alternative to CLI flags)
 GODOT_PROJECT=/path/to/project
 GODOT_BINARY=/path/to/godot
 GODOT_FORGE_PORT=6100
