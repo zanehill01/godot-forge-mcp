@@ -163,4 +163,20 @@ function registerToolGroups(): void {
 		requiresPlugin: false,
 		register: (s, c) => { import("./tools/groups/godot-standards.js").then((m) => m.registerGodotStandardsTools(s, c)); },
 	});
+
+	registerGroup({
+		name: "ai_behavior",
+		description: "godot_ai: state machines, behavior trees, dialogue, pathfinding, steering, spawners, director system (2D/3D)",
+		toolCount: 1,
+		requiresPlugin: false,
+		register: (s, c) => { import("./tools/groups/ai-behavior.js").then((m) => m.registerAIBehaviorTools(s, c)); },
+	});
+
+	registerGroup({
+		name: "roguelike",
+		description: "godot_roguelike: item/loot systems, inventory, proc chains, components (health/hitbox/hurtbox/status), event bus, stage chunks",
+		toolCount: 1,
+		requiresPlugin: false,
+		register: (s, c) => { import("./tools/groups/roguelike.js").then((m) => m.registerRoguelikeTools(s, c)); },
+	});
 }
