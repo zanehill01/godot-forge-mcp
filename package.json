@@ -1,6 +1,6 @@
 {
   "name": "godot-forge-mcp",
-  "version": "0.1.0",
+  "version": "0.6.0",
   "description": "Intelligent MCP server for Godot 4.3+ game development",
   "type": "module",
   "bin": {

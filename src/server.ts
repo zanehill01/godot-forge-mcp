@@ -26,7 +26,7 @@ import { registerPrompts } from "./prompts/index.js";
 export function createServer(config: ForgeConfig): McpServer {
 	const server = new McpServer({
 		name: "godot-forge-mcp",
-		version: "0.3.0",
+		version: "0.6.0",
 	});
 
 	const project = new GodotProject(config.projectPath);
@@ -178,6 +178,14 @@ function registerToolGroups(): void {
 		toolCount: 1,
 		requiresPlugin: false,
 		register: (s, c) => { import("./tools/groups/roguelike.js").then((m) => m.registerRoguelikeTools(s, c)); },
+	});
+
+	registerGroup({
+		name: "scaffold",
+		description: "godot_scaffold: init projects, create entities (scene+script+components in one call), validate scenes, generate UI themes, rename classes across files",
+		toolCount: 1,
+		requiresPlugin: false,
+		register: (s, c) => { import("./tools/groups/scaffold.js").then((m) => m.registerScaffoldTools(s, c)); },
 	});
 
 	registerGroup({
