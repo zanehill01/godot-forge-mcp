@@ -379,6 +379,45 @@ export function registerGodotStandardsTools(server: McpServer, ctx: ToolContext)
 							});
 						}
 
+						// Check for global_position set before add_child
+						const gdScripts = assets.filter((a) => a.ext === ".gd");
+						for (const script of gdScripts) {
+							try {
+								const content = readFileSync(script.absPath, "utf-8");
+								// Find varname.global_position = ... appearing before add_child(varname)
+								const globalPosPattern = /(\w+)\.global_position\s*=/g;
+								let match;
+								while ((match = globalPosPattern.exec(content)) !== null) {
+									const varName = match[1];
+									// Check if add_child(varName) appears AFTER this line
+									const afterPos = content.slice(match.index + match[0].length);
+									const addChildRegex = new RegExp(`(?:add_child|\\w+\\.add_child)\\(\\s*${varName}\\s*\\)`);
+									if (addChildRegex.test(afterPos)) {
+										issues.push({
+											file: script.resPath,
+											issue: `"${varName}.global_position" is set BEFORE add_child(${varName}). global_position is only valid after the node is in the tree. Move the assignment after add_child().`,
+											severity: "error",
+										});
+									}
+								}
+							} catch { /* skip unreadable */ }
+						}
+
+						// Check for SCREEN_TEXTURE usage (removed in Godot 4.x)
+						const shaderFiles = assets.filter((a) => a.ext === ".gdshader" || a.ext === ".gd");
+						for (const file of shaderFiles) {
+							try {
+								const content = readFileSync(file.absPath, "utf-8");
+								if (/\bSCREEN_TEXTURE\b/.test(content)) {
+									issues.push({
+										file: file.resPath,
+										issue: `SCREEN_TEXTURE is removed in Godot 4.x. Use "uniform sampler2D screen_texture : hint_screen_texture;" instead.`,
+										severity: "error",
+									});
+								}
+							} catch { /* skip unreadable */ }
+						}
+
 						return {
 							content: [{
 								type: "text",

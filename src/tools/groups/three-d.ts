@@ -36,12 +36,13 @@ export function registerThreeDTools(server: McpServer, ctx: ToolContext): void {
 • multimesh — scenePath, parent, name, meshType (box|sphere|cylinder|capsule|plane), meshScenePath, instances [{position,rotation?,scale?}], castShadow
 • static_object — scenePath, parent, name, bodyType (static|rigid|animatable), meshType, meshSize, collisionShape (box|sphere|capsule|cylinder|convex), collisionSize, materialPath, transform
 • occluder — scenePath, parent, name, occluderType (box|quad), size, transform
+• scatter — scenePath, parent, scatterScenes (string[]), scatterCount, scatterRadiusMin, scatterRadiusMax, scatterScaleMin, scatterScaleMax, scatterSeed
 • import_config — assetPath, settings (Record<string,string>)`,
 		{
 			action: z.enum([
 				"create_mesh", "add_model", "material", "environment", "particles",
 				"light", "camera", "gi", "fog_volume", "decal", "path3d", "gridmap",
-				"multimesh", "static_object", "occluder", "import_config",
+				"multimesh", "static_object", "occluder", "scatter", "import_config",
 			]),
 
 			// Common params
@@ -204,6 +205,15 @@ export function registerThreeDTools(server: McpServer, ctx: ToolContext): void {
 
 			// occluder
 			occluderType: z.enum(["box", "quad"]).optional(),
+
+			// scatter
+			scatterScenes: z.array(z.string()).optional().describe("res:// paths to prop scenes to scatter"),
+			scatterCount: z.number().optional().describe("Number of scatter instances (default 30)"),
+			scatterRadiusMin: z.number().optional().describe("Inner scatter radius (default 10)"),
+			scatterRadiusMax: z.number().optional().describe("Outer scatter radius (default 80)"),
+			scatterScaleMin: z.number().optional().describe("Min random scale (default 0.5)"),
+			scatterScaleMax: z.number().optional().describe("Max random scale (default 2.0)"),
+			scatterSeed: z.number().optional().describe("RNG seed (default 42)"),
 
 			// import_config
 			assetPath: z.string().optional().describe("Asset path (res://)"),
@@ -944,6 +954,89 @@ export function registerThreeDTools(server: McpServer, ctx: ToolContext): void {
 
 						writeFileSync(absPath, writeTscn(doc), "utf-8");
 						return { content: [{ type: "text", text: `Added OccluderInstance3D "${name}" (${occType}) to ${scenePath}` }] };
+					}
+
+					// ═══════════════════════════════════════════════════════════
+					// scatter
+					// ═══════════════════════════════════════════════════════════
+					case "scatter": {
+						const scenePath = params.scenePath!;
+						const parent = params.parent ?? ".";
+						const scenes = params.scatterScenes!;
+						const count = params.scatterCount ?? 30;
+						const rMin = params.scatterRadiusMin ?? 10;
+						const rMax = params.scatterRadiusMax ?? 80;
+						const sMin = params.scatterScaleMin ?? 0.5;
+						const sMax = params.scatterScaleMax ?? 2.0;
+						const seed = params.scatterSeed ?? 42;
+						const absPath = resToAbsolute(scenePath, ctx.projectRoot);
+						const doc = parseTscn(readFileSync(absPath, "utf-8"));
+
+						if (!scenes || scenes.length === 0) {
+							return { content: [{ type: "text", text: "Error: 'scatterScenes' param is required and must contain at least one res:// path" }], isError: true };
+						}
+
+						// Build ext_resource map: reuse existing or add new
+						const sceneResIds: string[] = [];
+						for (const sceneSrc of scenes) {
+							const existing = doc.extResources.find((r) => r.path === sceneSrc && r.type === "PackedScene");
+							if (existing) {
+								sceneResIds.push(existing.id);
+							} else {
+								const resId = generateResourceId();
+								doc.extResources.push({ type: "PackedScene", uid: generateUid(), path: sceneSrc, id: resId });
+								sceneResIds.push(resId);
+							}
+						}
+
+						// Seeded PRNG (simple mulberry32)
+						let s = seed | 0;
+						const rand = (): number => {
+							s = (s + 0x6D2B79F5) | 0;
+							let t = Math.imul(s ^ (s >>> 15), 1 | s);
+							t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+							return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+						};
+
+						for (let i = 0; i < count; i++) {
+							const resId = sceneResIds[Math.floor(rand() * sceneResIds.length)];
+							// Ring-based position: random angle, random radius between min and max
+							const angle = rand() * Math.PI * 2;
+							const radius = rMin + rand() * (rMax - rMin);
+							const x = Math.cos(angle) * radius;
+							const z = Math.sin(angle) * radius;
+							// Random Y rotation
+							const yRot = rand() * Math.PI * 2;
+							// Random uniform scale
+							const scl = sMin + rand() * (sMax - sMin);
+
+							// Build Transform3D: rotation around Y axis + scale + translation
+							const cosY = Math.cos(yRot);
+							const sinY = Math.sin(yRot);
+							const basis = [
+								cosY * scl, 0, sinY * scl,
+								0, scl, 0,
+								-sinY * scl, 0, cosY * scl,
+							];
+
+							const props: Record<string, unknown> = {
+								transform: {
+									type: "Transform3D",
+									basis,
+									origin: [x, 0, z],
+								},
+							};
+
+							doc.nodes.push({
+								name: `Scatter_${i}`,
+								parent,
+								instance: { type: "ExtResource", id: resId },
+								properties: props as Record<string, import("../../parsers/tscn/types.js").GodotVariant>,
+							});
+						}
+
+						writeFileSync(absPath, writeTscn(doc), "utf-8");
+						return { content: [{ type: "text", text: `Scattered ${count} instances from ${scenes.length} scene(s) into ${scenePath} (seed=${seed}, radius=${rMin}-${rMax}, scale=${sMin}-${sMax})` }] };
 					}
 
 					// ═══════════════════════════════════════════════════════════
